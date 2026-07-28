@@ -1,0 +1,23 @@
+{
+  "metadata": {
+    "target": "example.com",
+    "tool_version": "1.1"
+  },
+  "risk_summary": {
+    "security_risk": "Medium",
+    "security_score": "40/100",
+    "exposure_risk": "Low"
+  },
+  "exposure": {
+    "findings": [
+      {
+        "title": "Server Technology Disclosure",
+        "resource": "Server banner",
+        "category": "Information Disclosure",
+        "severity": "Low",
+        "source": "HTTP Header",
+        "evidence": "Server: ExampleServer/1.0"
+      }
+    ]
+  }
+}

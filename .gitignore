@@ -1,6 +1,11 @@
 __pycache__/
 *.py[cod]
 *.log
-reports/*.json
-reports/*.html
+reports/
+logs/
 .venv/
+venv/
+.pytest_cache/
+.idea/
+.vscode/
+*.pyc

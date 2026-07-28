@@ -1,0 +1,11 @@
+{
+  "metadata": {
+    "target": "localhost",
+    "tool_version": "1.1"
+  },
+  "risk_summary": {
+    "security_risk": "Low",
+    "security_score": "10/100",
+    "exposure_risk": "Informational"
+  }
+}
