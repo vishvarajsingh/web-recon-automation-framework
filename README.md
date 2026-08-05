@@ -94,7 +94,7 @@ web-recon-automation-framework/
 ### Setup
 
 ```powershell
-git clone <repository-url>
+git clone https://github.com/vishvarajsingh/web-recon-automation-framework.git
 cd web-recon-automation-framework
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
