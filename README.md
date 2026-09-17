@@ -34,6 +34,37 @@ The public browser scanner uses these same-origin endpoints:
 
 The separate `/api` investigation and dashboard routes are protected by the configured backend API key and are intended for internal/API clients. The browser UI does not request or expose that key.
 
+## Architecture
+
+```mermaid
+flowchart TD
+	A[Browser] --> B[FastAPI Frontend]
+	B --> C[Public Web Scanner API]
+	C --> D[Target Validation and Network Policy]
+	D --> E[Passive Recon Engine]
+	E --> F[WHOIS]
+	E --> G[DNS]
+	E --> H[IP Resolution]
+	E --> I[HTTP and TLS]
+	E --> J[robots.txt and Sitemap]
+	E --> K[Technology and Security Headers]
+	F --> L[Exposure Detection]
+	G --> L
+	H --> L
+	I --> L
+	J --> L
+	K --> L
+	L --> M[Risk Engine]
+	M --> N[SQLite Database]
+	M --> O[JSON Report]
+	M --> P[HTML Report]
+	N --> B
+	O --> B
+	P --> B
+```
+
+The CLI uses the same passive reconnaissance modules and reporting layer without the browser or FastAPI frontend.
+
 ## Features
 
 - Passive WHOIS lookup.
