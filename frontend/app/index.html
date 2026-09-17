@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Web Recon | Passive Scanner</title>
+  <link rel="stylesheet" href="/app/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand-mark"><span class="brand-dot"></span><span>WR / 01</span></div>
+      <div class="health" id="health">Checking database...</div>
+    </header>
+
+    <section class="hero" aria-labelledby="launch-title">
+      <div class="hero-copy">
+        <p class="eyebrow">PASSIVE RECONNAISSANCE SERVICE</p>
+        <h1>See the public<br><span>surface.</span></h1>
+        <p class="hero-lede">A quiet, evidence-first look at the DNS, transport, headers, technologies, and exposure signals surrounding a public target.</p>
+      </div>
+      <form id="scan-form" class="search-console">
+        <label for="target">TARGET</label>
+        <div class="bc-search">
+          <span class="search-prefix">//</span>
+          <input id="target" name="target" placeholder="example.com" autocomplete="url" required>
+          <span class="search-icon" aria-hidden="true"></span>
+        </div>
+        <button type="submit" id="scan-button" class="crimson-press-btn"><span>Scan target</span><b>↗</b></button>
+        <p class="form-message" id="form-message" role="status"></p>
+      </form>
+    </section>
+
+    <section class="scan-state hidden" id="progress-panel" aria-live="polite">
+      <div class="card scan-card">
+        <div class="scan-orbit"><div class="orbit-core"></div><div class="orbit-ring"></div></div>
+        <div class="loader" aria-label="Real scan in progress"><span id="scan-word">SCANNING TARGET</span></div>
+        <div class="scan-meta"><strong id="progress-status">QUEUED</strong><span id="progress-percent">0%</span></div>
+        <div class="progress-track"><div id="progress-bar"></div></div>
+        <p class="awareness-line" id="progress-message">Public evidence only. No intrusive requests.</p>
+      </div>
+    </section>
+
+    <section class="error-state hidden" id="error-state" aria-live="assertive">
+      <div class="face"><span class="eye left"></span><span class="eye right"></span><span class="mouth"></span></div>
+      <p class="eyebrow">SCAN INTERRUPTED</p><h2>Target unavailable</h2><p id="error-message" class="muted"></p>
+      <button id="retry-button" class="crimson-press-btn" type="button"><span>Retry scan</span><b>↻</b></button>
+    </section>
+
+    <section class="results hidden" id="dashboard">
+      <div class="result-heading"><div><p class="eyebrow">RECON COMPLETE</p><h2 id="result-target">Target</h2><p class="muted" id="result-time"></p></div><div class="risk-chip" id="risk-chip">ANALYSIS READY</div></div>
+      <button class="folder-card" id="folder-toggle" type="button" aria-expanded="false">
+        <span class="folder-tab"></span><span class="folder-front"><span class="folder-glyph">⌁</span><strong>RECON RESULTS</strong><small id="file-count">0 files</small><i>OPEN</i></span>
+      </button>
+      <div class="folder-files hidden" id="folder-files">
+        <div class="file-grid" id="file-grid"></div>
+        <div class="detail-panel hidden" id="detail-panel"><div class="detail-heading"><h3 id="detail-title">Evidence</h3><button id="detail-close" type="button">Close</button></div><div id="detail-content"></div></div>
+      </div>
+    </section>
+  </main>
+  <script src="/app/app.js"></script>
+</body>
+</html>

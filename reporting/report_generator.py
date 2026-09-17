@@ -67,6 +67,7 @@ def generate_html_report(payload: Dict[str, Any]) -> str:
         f"<p><strong>Overall Exposure Risk:</strong> {escape(str(summary.get('overall_score', 'Informational')))}</p>"
         f"<p><strong>Total Exposed Resources:</strong> {escape(str(summary.get('total_exposed_resources', 0)))}</p>"
         f"<p><strong>Critical Findings:</strong> {escape(str(summary.get('critical_findings', 0)))}</p>"
+        f"<p><strong>High Findings:</strong> {escape(str(summary.get('high_findings', 0)))}</p>"
         f"<p><strong>Medium Findings:</strong> {escape(str(summary.get('medium_findings', 0)))}</p>"
         f"<p><strong>Low Findings:</strong> {escape(str(summary.get('low_findings', 0)))}</p></section>",
     ]

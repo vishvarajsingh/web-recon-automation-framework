@@ -1,8 +1,11 @@
 """Collect passive SSL/TLS certificate details."""
 
 import logging
+import socket
+import ssl
 from datetime import datetime, timezone
 from typing import Any, Dict
+from urllib.parse import urlparse
 
 import requests
 from cryptography import x509
@@ -13,11 +16,25 @@ logger = logging.getLogger("web_recon")
 def gather_ssl_info(base_url: str) -> Dict[str, Any]:
     """Retrieve certificate details and return a structured payload."""
     try:
-        response = requests.get(base_url, timeout=8, verify=True, headers={"User-Agent": "WebReconAutomationFramework/1.0"})
-        if not response.url.startswith("https"):
+        response = requests.get(
+            base_url,
+            timeout=8,
+            verify=True,
+            allow_redirects=True,
+            stream=True,
+            headers={"User-Agent": "WebReconAutomationFramework/1.0"},
+        )
+        final_url = response.url
+        response.close()
+        parsed_url = urlparse(final_url)
+        if parsed_url.scheme != "https" or not parsed_url.hostname:
             return {"status": "not_https"}
 
-        cert = response.raw.connection.sock.getpeercert(binary_form=True)
+        port = parsed_url.port or 443
+        context = ssl.create_default_context()
+        with socket.create_connection((parsed_url.hostname, port), timeout=8) as connection:
+            with context.wrap_socket(connection, server_hostname=parsed_url.hostname) as tls_socket:
+                cert = tls_socket.getpeercert(binary_form=True)
         parsed = x509.load_der_x509_certificate(cert)
 
         now = datetime.now(timezone.utc)

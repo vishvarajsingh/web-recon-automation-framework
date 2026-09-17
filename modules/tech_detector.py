@@ -5,14 +5,17 @@ from typing import Dict, List
 
 import requests
 
+from modules.network_policy import read_response_text, safe_get
+
 logger = logging.getLogger("web_recon")
 
 
 def detect_technology(base_url: str) -> Dict[str, object]:
     """Look for common technologies using passive indicators."""
     try:
-        response = requests.get(base_url, timeout=8, headers={"User-Agent": "WebReconAutomationFramework/1.0"})
-        text = (response.text or "").lower()
+        response = safe_get(base_url, timeout=8, stream=True, headers={"User-Agent": "WebReconAutomationFramework/1.0"})
+        text, _ = read_response_text(response)
+        text = text.lower()
         headers = {k.lower(): v for k, v in response.headers.items()}
         detected: List[str] = []
 

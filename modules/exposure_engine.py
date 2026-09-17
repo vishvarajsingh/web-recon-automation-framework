@@ -221,6 +221,10 @@ class ExposureDetectionEngine:
         critical = sum(1 for finding in deduped if finding.get("severity") == "Critical")
         medium = sum(1 for finding in deduped if finding.get("severity") == "Medium")
         low = sum(1 for finding in deduped if finding.get("severity") == "Low")
+        severity_counts = {
+            severity: sum(1 for finding in deduped if finding.get("severity") == severity)
+            for severity in ["Critical", "High", "Medium", "Low", "Informational"]
+        }
 
         return {
             "findings": deduped,
@@ -228,7 +232,9 @@ class ExposureDetectionEngine:
                 "overall_score": get_exposure_rating(deduped),
                 "total_exposed_resources": total,
                 "critical_findings": critical,
+                "high_findings": severity_counts["High"],
                 "medium_findings": medium,
                 "low_findings": low,
+                "severity_counts": severity_counts,
             },
         }

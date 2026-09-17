@@ -1,241 +1,256 @@
 # Web Recon Automation Framework
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)]()
-[![Status](https://img.shields.io/badge/Status-Active-success)]()
-[![GitHub Stars](https://img.shields.io/badge/Stars-0-white)]()
-[![GitHub Issues](https://img.shields.io/badge/Issues-Open-yellow)](https://github.com/your-org/web-recon-automation-framework/issues)
-[![Last Commit](https://img.shields.io/badge/Last%20Commit-Updated-brightgreen)]()
-[![Version](https://img.shields.io/badge/Version-v1.0.0-blueviolet)]()
+Web Recon Automation Framework is a passive-only web reconnaissance application for authorized security assessments. It collects publicly available security-relevant information and produces structured JSON and HTML reports.
 
-A professional, passive-only reconnaissance framework for authorized security assessments. It gathers publicly available information about a target and produces structured JSON and HTML reports for review.
+The current project includes:
 
-## Overview
+- A Python CLI for direct reconnaissance runs.
+- A FastAPI application with a browser-based scanner.
+- The existing passive reconnaissance engine shared by both entry points.
+- Local database persistence for web investigations.
+- Real-time persisted scan status and report retrieval.
 
-This project is designed for cybersecurity interns, students, and recruiters who want a practical example of a modular reconnaissance workflow built in Python. It focuses on ethical, authorized, non-destructive analysis and avoids exploitation or intrusive scanning.
+Use this project only against systems you own or are explicitly authorized to assess.
 
-## Key Features
+## Web Application
 
-- Passive WHOIS, DNS, IP, HTTP, SSL, robot.txt, and sitemap analysis
-- Exposure detection for public resources discovered from public content
-- Deterministic security and exposure scoring
-- Rich CLI output with an alert panel and execution summary
-- JSON and HTML report generation
-- Logging and test coverage
+The verified local browser flow is:
 
-## Feature Matrix
-
-| Feature | Status | Description |
-| --- | --- | --- |
-| WHOIS | ✅ | Collects passive registrar and domain registration details |
-| DNS | ✅ | Queries common DNS record types |
-| IP Resolution | ✅ | Resolves IPv4/IPv6 and reverse DNS where available |
-| HTTP Headers | ✅ | Inspects response metadata, redirects, and cookies |
-| SSL Analysis | ✅ | Reviews TLS certificate details and validity |
-| robots.txt | ✅ | Collects publicly referenced paths |
-| sitemap.xml | ✅ | Extracts sitemap entries for passive review |
-| Technology Detection | ✅ | Identifies common platform clues |
-| Exposure Detection | ✅ | Flags publicly discovered exposure indicators |
-| Risk Engine | ✅ | Produces deterministic risk scoring |
-| HTML Report | ✅ | Generates a professional HTML dashboard |
-| JSON Report | ✅ | Writes structured JSON output |
-| Logging | ✅ | Emits operational scan logs |
-| Tests | ✅ | Includes automated verification for core behavior |
-
-## Architecture
-
-```mermaid
-flowchart TD
-    A[User] --> B[Input Validation]
-    B --> C[Recon Engine]
-    C --> D[WHOIS]
-    C --> E[DNS]
-    C --> F[HTTP]
-    C --> G[SSL/TLS]
-    C --> H[robots.txt]
-    C --> I[sitemap.xml]
-    D --> J[Exposure Detection Engine]
-    E --> J
-    F --> J
-    G --> J
-    H --> J
-    I --> J
-    J --> K[Risk Engine]
-    K --> L[Report Generator]
-    L --> M[JSON Report]
-    L --> N[HTML Dashboard]
+```text
+Browser -> FastAPI frontend -> passive recon engine -> SQLite database -> JSON/HTML reports -> browser results
 ```
+
+The frontend is served by FastAPI at `/app/`. A user enters a public domain or URL, starts a scan, watches the persisted status update, and reviews the returned evidence categories and generated reports.
+
+The public browser scanner uses these same-origin endpoints:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /web-api/investigations/` | Queue a target for passive reconnaissance |
+| `GET /web-api/investigations/{id}` | Read persisted status, progress, and completed results |
+| `GET /web-api/investigations/{id}/report/download` | Retrieve the generated JSON report |
+| `GET /web-api/investigations/{id}/report/html` | Retrieve the generated HTML report |
+| `GET /health/db` | Check local database availability |
+
+The separate `/api` investigation and dashboard routes are protected by the configured backend API key and are intended for internal/API clients. The browser UI does not request or expose that key.
+
+## Features
+
+- Passive WHOIS lookup.
+- DNS records: A, AAAA, MX, NS, TXT, and CNAME.
+- IPv4, IPv6, and reverse-DNS resolution.
+- HTTP response metadata, redirects, cookies, cache headers, and bounded response content.
+- Verified TLS certificate inspection, including issuer, subject, validity, signature algorithm, and SAN entries.
+- `robots.txt` collection.
+- `sitemap.xml` and `sitemap_index.xml` collection.
+- Technology detection from public headers and response content.
+- Security-header inspection for HSTS, CSP, X-Frame-Options, X-Content-Type-Options, and Referrer-Policy.
+- Passive exposure detection from robots content, sitemap entries, headers, and bounded HTML content.
+- Deterministic security-risk scoring and exposure severity counts.
+- Rich CLI output with scan status, exposure findings, and execution summary.
+- Structured JSON reports and generated HTML reports.
+- File logging through `logs/recon.log`.
+- FastAPI web scanning with persisted investigation status and results.
+- Browser result viewing for DNS/IP, HTTP, SSL/TLS, technologies, security headers, exposures, risk, and reports.
+
+## Web UI Flow
+
+1. Open the local scanner.
+2. Enter a public domain or URL, such as `example.com`.
+3. Select **Scan target**.
+4. The browser displays the real queued/running status from FastAPI.
+5. After completion, the results card opens the real evidence categories returned by the backend.
+6. Individual categories show the persisted module data.
+7. JSON and HTML report actions retrieve the generated report files.
+8. Invalid, blocked, unavailable, or failed targets show the backend error and a retry action.
+
+## Recon Modules
+
+| Module | What it collects or analyzes | Status |
+| --- | --- | --- |
+| WHOIS | Registrar, domain dates, and name servers when available | Implemented and exercised by the CLI/web engine |
+| DNS | A, AAAA, MX, NS, TXT, and CNAME records | Implemented and tested |
+| IP resolution | IPv4, IPv6, and reverse DNS | Implemented and exercised by the CLI/web engine |
+| HTTP | Response metadata, bounded content, redirects, cookies, and cache headers | Implemented and tested |
+| SSL/TLS | Verified peer certificate details and validity | Implemented and tested |
+| robots.txt | Publicly referenced paths | Implemented and exercised by the CLI/web engine |
+| Sitemap | Sitemap and sitemap-index content | Implemented and exercised by the CLI/web engine |
+| Technology detection | Public server/framework indicators | Implemented and exercised by the CLI/web engine |
+| Security headers | Common browser and transport security headers | Implemented and exercised by the CLI/web engine |
+| Exposure detection | Passive indicators in robots, sitemaps, headers, and page content | Implemented and tested |
+| Risk engine | Deterministic score and rating from observed security conditions | Implemented and tested |
+
+## Risk Engine
+
+The security score starts at zero and adds:
+
+- `15` for missing HSTS.
+- `15` for missing Content-Security-Policy.
+- `10` for missing X-Frame-Options.
+- `35` for an expired TLS certificate when TLS inspection succeeds.
+- `10` for a TLS certificate with fewer than 30 days remaining when TLS inspection succeeds.
+- `10` for an HTTP status code of 500 or higher.
+
+The score is capped at 100. Ratings are:
+
+| Score | Rating |
+| --- | --- |
+| 0–20 | Low |
+| 21–40 | Medium |
+| 41–70 | High |
+| 71–100 | Critical |
+
+Exposure findings use the highest observed finding severity. If no findings exist, the exposure rating is `Informational`.
+
+## Security Controls
+
+The current implementation includes:
+
+- Passive collection only; it does not add exploitation or intrusive scanning features.
+- Public-target validation before web scans.
+- Blocking of private, loopback, link-local, reserved, and other non-global destinations.
+- Blocking of targets containing embedded credentials.
+- Redirect validation for every outbound HTTP redirect.
+- A three-redirect limit.
+- A bounded response-content limit of 1 MiB.
+- Backend scan concurrency limited by configuration, defaulting to two workers.
+- Backend scan timeout limited by configuration, defaulting to 120 seconds.
+- API-key protection for the internal `/api` investigation, dashboard, chat, and report routes.
+- Configurable CORS origins; credentials are disabled by default.
+- Report path containment under the configured backend report directory.
+- HTML value escaping in generated reports and frontend result rendering.
+
+The public browser scanner intentionally does not ask users for the internal API key. Deployments exposing the public scanner should add operational controls such as authentication, rate limiting, and an appropriate reverse proxy policy before making it internet-facing.
+
+## Reporting and Persistence
+
+CLI runs write timestamped JSON and HTML reports to `reports/` by default. Web-triggered investigations write reports to `backend_reports/` and persist investigation metadata, progress, risk values, report paths, and completed raw output in the configured database.
+
+Local backend execution defaults to SQLite at `backend_data.db`. A PostgreSQL connection can be supplied through `DATABASE_URL` for an appropriately configured environment. Generated reports, logs, and the local database are runtime artifacts and are ignored by the repository configuration.
+
+Generated JSON contains metadata, normalized target information, module results, module statuses, risk output, exposure output, executive summary, and report paths. Generated HTML contains an executive summary, severity overview, exposure findings, summary metrics, and rendered module data.
 
 ## Project Structure
 
 ```text
-web-recon-automation-framework/
-├── assets/
-├── docs/
+Web Recon Automation Framework/
+├── backend/
+│   └── app/
+│       ├── api/
+│       │   ├── web.py
+│       │   ├── investigations.py
+│       │   ├── investigation_reports.py
+│       │   ├── dashboard.py
+│       │   └── chat.py
+│       ├── core/
+│       │   ├── config.py
+│       │   └── database.py
+│       ├── services/
+│       │   ├── engine_runner.py
+│       │   ├── job_service.py
+│       │   ├── target_security.py
+│       │   └── report_service.py
+│       ├── main.py
+│       ├── models.py
+│       ├── schemas.py
+│       └── security.py
+├── frontend/
+│   └── app/
+│       ├── index.html
+│       ├── app.js
+│       └── styles.css
 ├── modules/
+│   ├── whois_lookup.py
+│   ├── dns_lookup.py
+│   ├── ip_lookup.py
+│   ├── http_headers.py
+│   ├── ssl_info.py
+│   ├── robots.py
+│   ├── sitemap.py
+│   ├── tech_detector.py
+│   ├── security_headers.py
+│   ├── exposure_engine.py
+│   ├── risk_engine.py
+│   ├── input_validator.py
+│   └── network_policy.py
 ├── reporting/
-├── sample_reports/
-├── screenshots/
+│   └── report_generator.py
 ├── tests/
 ├── main.py
 ├── config.py
 ├── requirements.txt
-├── README.md
+├── pyproject.toml
+├── test_framework.py
 └── LICENSE
 ```
 
 ## Installation
 
-### Requirements
-- Python 3.10+
-- pip
+Requirements:
 
-### Setup
+- Python 3.10 or newer.
+- pip.
+
+From the project root on Windows PowerShell:
 
 ```powershell
-git clone https://github.com/vishvarajsingh/web-recon-automation-framework.git
-cd web-recon-automation-framework
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt pytest rich cryptography
+.\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+.\.venv\Scripts\python.exe -m pip install pytest httpx2
 ```
 
-## Quick Start
+`backend\requirements.txt` contains the backend dependencies and the runtime dependencies used by the reconnaissance engine.
+
+## Run the Web Application
+
+From the project root with the virtual environment activated:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+Open:
+
+```text
+http://127.0.0.1:8000/app/
+```
+
+The command and URL above have been verified against the current application.
+
+## CLI Usage
+
+The direct CLI remains available:
 
 ```powershell
 .\.venv\Scripts\python.exe main.py example.com
-.\.venv\Scripts\python.exe main.py https://example.com
 ```
 
-## Demo
-
-```powershell
-.\.venv\Scripts\python.exe main.py example.com
-```
-
-Example output includes:
-- an exposure alert panel
-- an execution summary
-- JSON and HTML report output
-
-> The framework is intended only for authorized reconnaissance on systems you own or have explicit permission to assess.
-
-## Screenshots
-
-### Terminal Execution
-![Terminal Execution](screenshots/terminal_execution.png)
-
-### Execution Summary
-![Execution Summary](screenshots/execution_summary.png)
-
-### HTML Dashboard
-![HTML Dashboard](screenshots/html_dashboard.png)
-
-### Exposure Alert Panel
-![Exposure Alert Panel](screenshots/exposure_alert_panel.png)
-
-### DNS Results
-![DNS Results](screenshots/dns_results.png)
-
-### SSL Analysis
-![SSL Analysis](screenshots/ssl_analysis.png)
-
-### Security Headers
-![Security Headers](screenshots/security_headers.png)
-
-### Risk Summary
-![Risk Summary](screenshots/risk_summary.png)
-
-## Sample Reports
-
-Representative sample reports are available in [sample_reports](sample_reports).
-
-- [sample_reports/example.com.html](sample_reports/example.com.html)
-- [sample_reports/example.com.json](sample_reports/example.com.json)
-- [sample_reports/localhost.html](sample_reports/localhost.html)
-- [sample_reports/localhost.json](sample_reports/localhost.json)
-
-## Modules
-
-The framework is organized into focused modules:
-
-- WHOIS lookup
-- DNS lookup
-- IP resolution
-- HTTP analysis
-- SSL inspection
-- robots.txt and sitemap handling
-- Technology detection
-- Exposure detection
-- Risk engine
-- Reporting
-
-## Risk Engine
-
-Security scoring uses deterministic thresholds:
-
-- 0–20 = Low
-- 21–40 = Medium
-- 41–70 = High
-- 71–100 = Critical
-
-## Exposure Detection
-
-Exposure detection is passive-only and analyzes publicly discoverable evidence such as:
-
-- robots.txt
-- sitemap.xml
-- HTML and JavaScript references
-- HTTP headers
-- public response metadata
-
-## HTML Report Preview
-
-The HTML report includes:
-- executive summary
-- severity tiles
-- exposed-resource cards
-- module details
-- remediation guidance
+The CLI prints module completion, exposure findings, risk values, and report paths. Its reports are written to `reports/`.
 
 ## Testing
+
+Run the complete test suite:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-## Documentation
+The current verified result is **34 passed**. The standalone compatibility script can also be run with:
 
-Additional documentation is available in [docs](docs):
-- [docs/Architecture.md](docs/Architecture.md)
-- [docs/Features.md](docs/Features.md)
-- [docs/Installation.md](docs/Installation.md)
-- [docs/Roadmap.md](docs/Roadmap.md)
-- [docs/Screenshots.md](docs/Screenshots.md)
+```powershell
+.\.venv\Scripts\python.exe test_framework.py
+```
 
-## Roadmap
+## Limitations
 
-Planned improvements include:
-- passive subdomain enumeration
-- Docker support
-- REST API delivery
-- PDF report export
-- dark HTML theme
-- plugin architecture
-
-## Contributing
-
-Contributions are welcome. Please open an issue or submit a pull request with a clear explanation of the improvement.
+- Results depend on DNS, WHOIS, TLS, and HTTP availability from the executing environment.
+- Some domains block or omit WHOIS, robots, sitemaps, headers, or certificate access; those modules report structured failure or not-found states.
+- Exposure detection identifies passive references and indicators; it does not verify exploitability or perform intrusive requests.
+- The public web scanner is designed for local or controlled authorized use and does not provide production-grade user identity, rate limiting, or multi-tenant isolation by itself.
+- Docker files are present in the repository, but a complete Docker build/start validation has not been verified in the current environment and is not documented as a supported deployment method here.
+- The repository contains generated runtime artifacts locally, but they are not treated as versioned example outputs by this README.
 
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](LICENSE).
-
-## Author
-
-Built as a practical cybersecurity project for learning, portfolio development, and authorized reconnaissance practice.
-
-## Acknowledgements
-
-Thanks to the Python, cybersecurity, and open-source communities for the tools and inspiration behind this project.

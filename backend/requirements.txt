@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+SQLAlchemy
+psycopg2-binary
+pydantic
+python-dotenv
+beautifulsoup4>=4.12.0
+cryptography>=42.0.0
+dnspython>=2.6.1
+python-whois>=0.8.0
+requests>=2.31.0
+rich>=13.7.0

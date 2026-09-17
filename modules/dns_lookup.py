@@ -19,7 +19,7 @@ def _safe_answer(answer: Any) -> Dict[str, Any]:
 
 def gather_dns_info(hostname: str) -> Dict[str, Any]:
     """Query common record types and return structured results."""
-    result: Dict[str, Any] = {"hostname": hostname, "records": {}}
+    result: Dict[str, Any] = {"status": "failed", "hostname": hostname, "records": {}}
     for record_type in ["A", "AAAA", "MX", "NS", "TXT", "CNAME"]:
         try:
             answers = dns_resolver.resolve(hostname, record_type, lifetime=3)
@@ -33,4 +33,11 @@ def gather_dns_info(hostname: str) -> Dict[str, Any]:
         except Exception as exc:  # pragma: no cover
             logger.warning("DNS query %s failed for %s: %s", record_type, hostname, exc)
             result["records"][record_type] = {"status": "error", "error": str(exc)}
+    statuses = [record["status"] for record in result["records"].values()]
+    if any(status == "ok" for status in statuses):
+        result["status"] = "partial" if any(status in {"error", "timeout"} for status in statuses) else "ok"
+    elif any(status in {"error", "timeout"} for status in statuses):
+        result["status"] = "failed"
+    else:
+        result["status"] = "not_found"
     return result

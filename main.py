@@ -6,7 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 from rich.console import Console
 from rich.panel import Panel
@@ -38,16 +38,40 @@ console = Console()
 def run_module(module_name: str, function: Any, *args: Any) -> Tuple[str, Dict[str, Any]]:
     """Execute a module and return its name and result safely."""
     try:
-        return module_name, function(*args)
+        result = function(*args)
+        if not isinstance(result, dict):
+            return module_name, {"status": "error", "error": "Module returned a non-dictionary result"}
+        return module_name, result
     except Exception as exc:  # pragma: no cover
         return module_name, {"status": "error", "error": str(exc)}
 
 
-def collect_recon(target: str) -> Dict[str, Any]:
+def collect_recon(
+    target: str,
+    output_dir: Path | str = OUTPUT_DIRECTORY,
+    progress_callback: Callable[[int, str], None] | None = None,
+) -> Dict[str, Any]:
     """Run all passive modules and aggregate their results."""
+
+    def module_state(result: Dict[str, Any]) -> str:
+        status = result.get("status")
+        if status == "ok":
+            return "SUCCESS"
+        if status == "partial":
+            return "PARTIAL"
+        if status == "not_found":
+            return "NOT_FOUND"
+        return "FAILED"
+
+    def update_progress(percent: int, message: str) -> None:
+        if progress_callback:
+            progress_callback(percent, message)
+
     start_time = time.time()
+    update_progress(5, "Validating target")
     normalized = normalize_target(target)
     if not normalized.get("valid"):
+        update_progress(100, "Target validation failed")
         return {"status": "invalid", "error": normalized.get("error", "Invalid target")}
 
     hostname = normalized["hostname"]
@@ -76,17 +100,15 @@ def collect_recon(target: str) -> Dict[str, Any]:
                 executor.submit(run_module, "security_headers", gather_security_headers, base_url),
                 executor.submit(run_module, "technology", detect_technology, base_url),
             ]
-            for future in futures:
+            for idx, future in enumerate(futures):
                 name, result = future.result()
                 modules[name] = result
-                module_status[name] = "SUCCESS" if result.get("status") not in {"error", "failed"} else "FAILED"
-                if name == "robots" and result.get("status") == "not_found":
-                    module_status[name] = "NOT_FOUND"
-                if name == "sitemap" and result.get("results"):
-                    module_status[name] = "SUCCESS"
+                module_status[name] = module_state(result)
                 logger.info("Module completed: %s", name)
                 progress.advance(task)
+                update_progress(10 + int((idx + 1) * 4.5), f"Completed {name}")
 
+    update_progress(50, "Analyzing security risk")
     risk_engine = RiskEngine()
     risk = risk_engine.score({
         "security_headers": modules.get("security_headers", {}),
@@ -94,6 +116,7 @@ def collect_recon(target: str) -> Dict[str, Any]:
         "http": modules.get("http", {}),
     })
 
+    update_progress(65, "Analyzing exposure")
     exposure_engine = ExposureDetectionEngine()
     exposure = exposure_engine.analyze({
         "target": target,
@@ -106,7 +129,11 @@ def collect_recon(target: str) -> Dict[str, Any]:
         "metadata": {
             "target": target,
             "normalized_url": base_url,
-            "resolved_ip": None,
+            "resolved_ip": (
+                modules.get("ip", {}).get("ipv4", [])
+                or modules.get("ip", {}).get("ipv6", [])
+                or [None]
+            )[0],
             "start_time": datetime.fromtimestamp(start_time).isoformat(),
             "end_time": datetime.now().isoformat(),
             "duration_seconds": duration,
@@ -126,6 +153,7 @@ def collect_recon(target: str) -> Dict[str, Any]:
             "exposure_risk": exposure["summary"]["overall_score"],
             "exposed_resources": exposure["summary"]["total_exposed_resources"],
             "critical_findings": exposure["summary"]["critical_findings"],
+            "high_findings": exposure["summary"]["high_findings"],
             "medium_findings": exposure["summary"]["medium_findings"],
             "low_findings": exposure["summary"]["low_findings"],
         },
@@ -136,12 +164,20 @@ def collect_recon(target: str) -> Dict[str, Any]:
         ),
     }
 
-    output_path = OUTPUT_DIRECTORY / f"{hostname.replace('.', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    update_progress(80, "Writing reports")
+    output_dir = Path(output_dir)
+    output_path = output_dir / f"{hostname.replace('.', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    html_path = output_path.with_suffix(".html")
+    payload["report_paths"] = {
+        "json": str(output_path),
+        "html": str(html_path),
+    }
     safe_json_dump(payload, str(output_path))
     html_report = generate_html_report(payload)
-    html_path = output_path.with_suffix(".html")
     html_path.write_text(html_report, encoding="utf-8")
 
+    update_progress(100, "Recon finished")
     logger.info("Scan finished for %s", hostname)
 
     severity_styles = {
@@ -170,12 +206,20 @@ def collect_recon(target: str) -> Dict[str, Any]:
     summary_table.add_row("Exposure Risk", exposure["summary"]["overall_score"])
     summary_table.add_row("Exposed Resources", str(exposure["summary"]["total_exposed_resources"]))
     summary_table.add_row("Critical Findings", str(exposure["summary"]["critical_findings"]))
-    summary_table.add_row("High Findings", "0")
+    summary_table.add_row("High Findings", str(exposure["summary"]["high_findings"]))
     summary_table.add_row("Medium Findings", str(exposure["summary"]["medium_findings"]))
     summary_table.add_row("Low Findings", str(exposure["summary"]["low_findings"]))
     summary_table.add_row("Scan Duration", f"{duration:.2f} seconds")
-    summary_table.add_row("JSON Report", str(output_path.relative_to(Path.cwd())) if output_path.is_absolute() and output_path.exists() else str(output_path))
-    summary_table.add_row("HTML Report", str(html_path.relative_to(Path.cwd())) if html_path.is_absolute() and html_path.exists() else str(html_path))
+    try:
+        display_json_path = str(output_path.relative_to(Path.cwd()))
+    except ValueError:
+        display_json_path = str(output_path)
+    try:
+        display_html_path = str(html_path.relative_to(Path.cwd()))
+    except ValueError:
+        display_html_path = str(html_path)
+    summary_table.add_row("JSON Report", display_json_path)
+    summary_table.add_row("HTML Report", display_html_path)
     console.print(summary_table)
     return payload
 
