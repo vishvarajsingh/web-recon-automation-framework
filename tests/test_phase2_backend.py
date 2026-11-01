@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 from backend.app.core import config
 from backend.app.dependencies import get_db
 from backend.app.main import app, database_health
-from backend.app.models import Base
+from backend.app.models import Base, Investigation
 from backend.app.services.target_security import validate_target
 from modules import network_policy
 
@@ -168,6 +168,39 @@ def test_public_scanner_accepts_target_without_api_key(backend_client, monkeypat
 
     assert response.status_code == 202
     assert response.json()["target"] == "example.com"
+
+
+def test_public_html_report_renders_inline_and_resolves_sibling_report_links(backend_client, tmp_path):
+    json_path = tmp_path / "example.json"
+    html_path = tmp_path / "example.html"
+    json_path.write_text('{"target":"example.com"}', encoding="utf-8")
+    html_path.write_text("<html><body>Readable report</body></html>", encoding="utf-8")
+
+    session = backend_client.app.state.test_session_factory()
+    investigation = Investigation(
+        target="example.com",
+        target_type="domain",
+        status="completed",
+        report_location=str(json_path),
+        html_report_location=str(html_path),
+    )
+    session.add(investigation)
+    session.commit()
+    session.refresh(investigation)
+    investigation_id = investigation.id
+    session.close()
+
+    html_response = backend_client.get(f"/web-api/investigations/{investigation_id}/report/html")
+    json_response = backend_client.get(f"/web-api/investigations/{investigation_id}/report/example.json")
+
+    assert html_response.status_code == 200
+    assert html_response.headers["content-type"].startswith("text/html")
+    assert html_response.headers["content-disposition"].startswith("inline;")
+    assert "Readable report" in html_response.text
+    assert json_response.status_code == 200
+    assert json_response.headers["content-type"].startswith("application/json")
+    assert json_response.headers["content-disposition"].startswith("inline;")
+    assert json_response.json() == {"target": "example.com"}
 
 
 def test_report_path_traversal_is_rejected(backend_client, tmp_path):

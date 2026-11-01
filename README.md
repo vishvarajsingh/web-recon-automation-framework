@@ -227,11 +227,11 @@ From the project root on Windows PowerShell:
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-.\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
-.\.venv\Scripts\python.exe -m pip install pytest httpx2
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-`backend\requirements.txt` contains the backend dependencies and the runtime dependencies used by the reconnaissance engine.
+The root `requirements.txt` installs the CLI and backend runtime dependencies plus `pytest` and `httpx2` for the complete test suite. `backend\requirements.txt` includes the root file so backend-only setup stays in sync. Standard-library modules are not listed.
 
 ## Run the Web Application
 
@@ -261,13 +261,13 @@ The CLI prints module completion, exposure findings, risk values, and report pat
 
 ## Testing
 
-Run the complete test suite:
+Run the complete test suite after installing `requirements.txt`:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-The current verified result is **34 passed**. The standalone compatibility script can also be run with:
+Latest dependency audit: **46 passed** on Python 3.14. Rerun the full suite after dependency or code changes. The standalone compatibility script can also be run with:
 
 ```powershell
 .\.venv\Scripts\python.exe test_framework.py
@@ -281,6 +281,52 @@ The current verified result is **34 passed**. The standalone compatibility scrip
 - The public web scanner is designed for local or controlled authorized use and does not provide production-grade user identity, rate limiting, or multi-tenant isolation by itself.
 - Docker files are present in the repository, but a complete Docker build/start validation has not been verified in the current environment and is not documented as a supported deployment method here.
 - The repository contains generated runtime artifacts locally, but they are not treated as versioned example outputs by this README.
+- CVE correlation against NVD or another vulnerability feed is not implemented. Technology clues are not vulnerability confirmation.
+- Technology detection currently reports product names without evidence-backed version matching. Do not infer affected versions from product names alone.
+- Exposure Intelligence reports paths referenced by robots.txt and sitemaps and reuses only the exact base URL HTTP result already collected. It does not request discovered paths.
+- Risk scoring is a deterministic heuristic, not a CVSS calculation or a substitute for manual assessment.
+
+## Configuration
+
+Backend settings are read from environment variables (a root `.env` file is loaded when present). Common settings include `DATABASE_URL`, `BACKEND_API_KEY`, `ALLOWED_ORIGINS`, `ALLOW_CREDENTIALS`, `MAX_CONCURRENT_SCANS`, and `SCAN_TIMEOUT_SECONDS`. Keep real credentials in `.env`; never add them to Git. `BACKEND_API_KEY` protects internal `/api` routes. The browser scanner routes are separate and should be protected with deployment-level access controls before public exposure.
+
+## Authorized Assessment Workflow
+
+1. Obtain written authorization and define the exact hostname and permitted activity.
+2. Confirm the target is in scope and publicly routable; the framework blocks non-global and private destinations.
+3. Run the CLI or local web interface using the commands above.
+4. Review raw evidence, failed checks, and report limitations before making security conclusions.
+5. Store reports securely. Generated reports can contain target-sensitive information and are excluded from version control.
+
+## Generated Report Formats
+
+The JSON report preserves collected module output, timestamps, risk and exposure summaries, and report paths. The HTML report presents an executive summary, assessment scope and methodology, technology observations, exposure candidates, findings, risk contributions, and expandable raw JSON. An HTTP status is shown for a discovered path only when an existing scan request checked that exact resource. No discovered path is automatically crawled.
+
+Risk scores sum distinct observed heuristic checks and cap at 100. Each returned score factor records its point contribution, evidence, confidence, and explanation. Unknown or failed checks do not add points. Exposure findings describe observed references or headers; a referenced path alone does not establish that it is accessible or vulnerable.
+
+## Screenshots
+
+Add screenshots captured from an actual local run under `screenshots/` and link them here. Do not publish private assessment targets, credentials, API keys, or unredacted customer data. No screenshot is claimed as current evidence until one is added.
+
+## Example Output
+
+No genuine sample report is currently designated for publication. Existing generated reports can contain real target data and should not be copied into this section without review and sanitization. Use the JSON and HTML report descriptions above to understand the output structure.
+
+## Configuration and API
+
+Start the web application using the Uvicorn command above. The local health check is `GET /health/db`; the browser scanner API routes are listed in the Web Application section. Internal investigation, dashboard, chat, and report API routes require the configured backend API key.
+
+## Repository
+
+GitHub: [vishvarajsingh/web-recon-automation-framework](https://github.com/vishvarajsingh/web-recon-automation-framework)
+
+See [CHANGELOG.md](CHANGELOG.md) for changes and verification notes. Only verified functionality is described as implemented; CVE correlation remains on the roadmap.
+
+## Roadmap
+
+- Add an optional NVD CVE lookup with explicit affected-version matching, request timeouts, rate-limit handling, and confidence labels.
+- Add evidence-backed technology version detection.
+- Add reviewed, sanitized sample reports and screenshots.
 
 ## License
 

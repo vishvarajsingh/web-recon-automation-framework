@@ -28,3 +28,37 @@ def test_risk_engine_scoring():
         "http": {"server": "nginx"},
     })
     assert result["overall_rating"] == "Critical"
+
+
+def test_risk_engine_explains_distinct_score_contributions():
+    result = RiskEngine().score({
+        "security_headers": {"status": "ok", "headers": {
+            "strict_transport_security": "max-age=31536000",
+            "content_security_policy": "default-src 'self'",
+            "x_frame_options": "DENY",
+        }},
+        "ssl": {"status": "ok", "expired": True, "days_remaining": 0},
+        "http": {"status": "ok", "status_code": 200},
+    })
+
+    assert result["overall_score"] == 35
+    assert result["factors"] == [{
+        "factor": "Expired TLS certificate",
+        "points": 35,
+        "severity": "Medium",
+        "confidence": "High",
+        "evidence": "TLS inspection reported expired=True.",
+        "reason": "Expired TLS certificate contributes 35 points to the deterministic security score.",
+    }]
+    assert "capped at 100" in result["explanation"]
+
+
+def test_risk_engine_ignores_failed_or_invalid_status_evidence():
+    result = RiskEngine().score({
+        "security_headers": {"status": "error", "headers": {}, "error": "timeout"},
+        "ssl": {"status": "error", "days_remaining": -1},
+        "http": {"status": "ok", "status_code": 700},
+    })
+
+    assert result["overall_score"] == 0
+    assert result["factors"] == []

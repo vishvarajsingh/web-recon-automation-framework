@@ -1,6 +1,17 @@
-dnspython>=2.6.1
-python-whois>=0.8.0
-requests>=2.31.0
-beautifulsoup4>=4.12.0
-cryptography>=42.0.0
-rich>=13.7.0
+# Runtime: passive reconnaissance CLI and web backend
+beautifulsoup4>=4.12,<5
+cryptography>=42,<47
+dnspython>=2.6,<3
+fastapi>=0.115,<1
+psycopg2-binary>=2.9,<3
+pydantic>=2.7,<3
+python-dotenv>=1,<2
+python-whois>=0.8,<1
+requests>=2.31,<3
+rich>=13.7,<15
+SQLAlchemy>=2.0,<3
+uvicorn>=0.27,<1
+
+# Test suite: Starlette TestClient uses httpx2; pytest runs the project tests.
+httpx2>=2.12,<3
+pytest>=8,<9

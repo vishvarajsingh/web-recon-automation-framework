@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
+from pathlib import Path
 from sqlalchemy.orm import Session
 
 from ..dependencies import get_db
@@ -64,4 +65,38 @@ def download_web_html_report(investigation_id: int, db: Session = Depends(get_db
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     if not report_path.exists():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="HTML report file missing")
-    return FileResponse(report_path, media_type="text/html", filename=report_path.name)
+    return FileResponse(
+        report_path,
+        media_type="text/html",
+        filename=report_path.name,
+        content_disposition_type="inline",
+    )
+
+
+@router.get("/investigations/{investigation_id}/report/{filename}")
+def view_web_report_file(investigation_id: int, filename: str, db: Session = Depends(get_db)):
+    investigation = get_investigation(db, investigation_id)
+    if not investigation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Investigation not found")
+
+    report_locations = [investigation.report_location, investigation.html_report_location]
+    matching_path = next(
+        (path for path in report_locations if path and Path(path).name == filename),
+        None,
+    )
+    if matching_path is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report file not found")
+    try:
+        report_path = safe_report_path(matching_path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    if not report_path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report file missing")
+
+    media_type = "text/html" if report_path.suffix.lower() == ".html" else "application/json"
+    return FileResponse(
+        report_path,
+        media_type=media_type,
+        filename=report_path.name,
+        content_disposition_type="inline",
+    )

@@ -41,18 +41,27 @@ class ExposureDetectionEngine:
         reason: str,
         recommendation: str,
         status_code: Any = None,
+        confidence: str = "Low",
+        timestamp: Any = None,
     ) -> None:
         findings.append(
             {
                 "title": title,
+                "description": reason,
                 "resource": resource,
+                "affected_asset": resource,
                 "category": category,
                 "severity": severity,
+                "confidence": confidence,
                 "source": source,
+                "detection_method": source,
+                "timestamp": timestamp,
                 "status_code": status_code,
                 "evidence": evidence,
                 "reason": reason,
+                "potential_impact": reason,
                 "recommendation": recommendation,
+                "references": [],
             }
         )
 
@@ -62,6 +71,7 @@ class ExposureDetectionEngine:
         http = modules.get("http", {}) if isinstance(modules.get("http"), dict) else {}
         robots = modules.get("robots", {}) if isinstance(modules.get("robots"), dict) else {}
         sitemap = modules.get("sitemap", {}) if isinstance(modules.get("sitemap"), dict) else {}
+        timestamp = payload.get("timestamp")
 
         robots_content = robots.get("content", "") if isinstance(robots, dict) else ""
         if robots_content:
@@ -78,6 +88,7 @@ class ExposureDetectionEngine:
                     reason="A path was publicly referenced in robots.txt and may warrant review for access controls.",
                     recommendation="Review whether the referenced path should remain publicly discoverable.",
                     status_code=None,
+                    timestamp=timestamp,
                 )
 
             for keyword, title, category, severity in [
@@ -99,6 +110,7 @@ class ExposureDetectionEngine:
                         reason="A potentially sensitive path was publicly referenced in robots.txt.",
                         recommendation="Confirm access controls and authentication requirements for the referenced resource.",
                         status_code=None,
+                        timestamp=timestamp,
                     )
 
         for item in sitemap.get("results", []) if isinstance(sitemap, dict) else []:
@@ -119,6 +131,7 @@ class ExposureDetectionEngine:
                         reason="A sitemap entry referenced a resource that may be sensitive or not intended for public discovery.",
                         recommendation="Review whether the referenced resource should remain public and restrict access if necessary.",
                         status_code=None,
+                        timestamp=timestamp,
                     )
 
         http_headers = http.get("headers", {}) if isinstance(http.get("headers"), dict) else {}
@@ -136,6 +149,8 @@ class ExposureDetectionEngine:
                 reason="The response revealed server technology information through the HTTP headers.",
                 recommendation="Minimize unnecessary server/version information where operationally appropriate.",
                 status_code=status_code,
+                confidence="Medium",
+                timestamp=timestamp,
             )
 
         if any(header in http_headers for header in ["x-powered-by", "server"]):
@@ -150,6 +165,8 @@ class ExposureDetectionEngine:
                 reason="Response headers revealed platform or framework details that can assist targeting.",
                 recommendation="Remove unnecessary version-specific headers where possible.",
                 status_code=status_code,
+                confidence="Medium",
+                timestamp=timestamp,
             )
 
         content = http.get("content", "") if isinstance(http, dict) else ""
@@ -166,6 +183,7 @@ class ExposureDetectionEngine:
                     reason="The retrieved page referenced a login path that is publicly visible in the document content.",
                     recommendation="Ensure the login interface enforces strong authentication and is restricted as appropriate.",
                     status_code=status_code,
+                    timestamp=timestamp,
                 )
             if re.search(r"/admin", content, re.IGNORECASE):
                 self._add_finding(
@@ -179,6 +197,7 @@ class ExposureDetectionEngine:
                     reason="The retrieved page referenced an administrative path in public content.",
                     recommendation="Restrict administrative access with strong authentication, authorization, and access controls.",
                     status_code=status_code,
+                    timestamp=timestamp,
                 )
             if re.search(r"/api/|swagger|openapi", content, re.IGNORECASE):
                 self._add_finding(
@@ -192,6 +211,7 @@ class ExposureDetectionEngine:
                     reason="Public content referenced API documentation or related endpoints.",
                     recommendation="Consider limiting public visibility of API documentation if it should not be broadly accessible.",
                     status_code=status_code,
+                    timestamp=timestamp,
                 )
             if re.search(r"/\.git|\.env|config(\.php|\.json|\.yaml|\.yml)|backup(\.zip|\.tar|\.gz)", content, re.IGNORECASE):
                 self._add_finding(
@@ -205,6 +225,8 @@ class ExposureDetectionEngine:
                     reason="Public content referenced a file or path that may be sensitive if exposed.",
                     recommendation="Verify that any referenced configuration or backup files are not publicly accessible.",
                     status_code=status_code,
+                    confidence="Medium",
+                    timestamp=timestamp,
                 )
 
         deduped: List[Dict[str, Any]] = []

@@ -7,6 +7,7 @@ import requests
 import main
 from modules import http_headers, ssl_info
 from modules.exposure_engine import ExposureDetectionEngine
+from reporting.report_generator import generate_html_report
 
 
 class FakeHttpResponse:
@@ -146,3 +147,190 @@ def test_collect_recon_statuses_counts_and_saved_payload(monkeypatch, tmp_path):
     assert payload["module_status"]["ssl"] == "FAILED"
     assert payload["risk_summary"]["high_findings"] == 1
     assert saved["report_paths"] == payload["report_paths"]
+
+
+def test_generate_html_report_uses_professional_summary_and_no_raw_windows_paths():
+    payload = {
+        "target": "example.com",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "normalized_target": {"hostname": "example.com", "scheme": "https", "base_url": "https://example.com", "path": "/"},
+        "metadata": {"duration_seconds": 12.5},
+        "risk_summary": {
+            "security_risk": "Low",
+            "security_score": "15/100",
+            "exposure_risk": "Medium",
+            "exposed_resources": 1,
+            "critical_findings": 0,
+            "high_findings": 0,
+            "medium_findings": 1,
+            "low_findings": 0,
+        },
+        "risk": {"overall_score": 15, "overall_rating": "Low"},
+        "exposure": {
+            "summary": {
+                "overall_score": "Medium",
+                "total_exposed_resources": 1,
+                "critical_findings": 0,
+                "high_findings": 0,
+                "medium_findings": 1,
+                "low_findings": 0,
+            },
+            "findings": [{
+                "title": "Administrative Interface Discovered",
+                "severity": "Medium",
+                "resource": "/admin",
+                "source": "robots.txt",
+                "status_code": 200,
+                "evidence": "Disallow: /admin",
+                "reason": "A public path hint may lead to a restricted administrative area.",
+                "recommendation": "Verify access controls and authentication.",
+            }],
+        },
+        "report_paths": {
+            "json": "/tmp/example.json",
+            "html": "/tmp/example.html",
+        },
+        "modules": {
+            "whois": {"status": "ok", "domain_name": "example.com"},
+            "dns": {"status": "not_found", "records": {"A": {"status": "nxdomain"}}},
+            "http": {"status": "ok", "status_code": 200, "final_url": "https://example.com", "server": "ExampleServer", "content_type": "text/html"},
+            "security_headers": {"status": "ok", "headers": {"strict_transport_security": "", "content_security_policy": "", "x_frame_options": "SAMEORIGIN", "x_content_type_options": "nosniff", "referrer_policy": "same-origin"}},
+            "technology": {"status": "ok", "technologies": ["Apache"]},
+            "robots": {"status": "ok", "results": ["Disallow: /admin"]},
+            "sitemap": {"status": "not_found", "results": []},
+        },
+    }
+
+    html = generate_html_report(payload)
+
+    assert "Metric" in html and "Value" in html
+    assert "Security Score" in html and "15/100" in html
+    assert "Executive Summary" in html
+    assert "Exposure Findings" in html
+    assert "Administrative Interface Discovered" in html
+    assert "View Raw Data" in html
+    assert "example.json" in html and "example.html" in html
+    assert "C:\\Users" not in html
+    assert "absolute" not in html.lower()
+
+
+def test_generate_html_report_formats_dns_and_ip_values_for_beginners():
+    payload = {
+        "target": "https://example.com",
+        "normalized_target": {"hostname": "example.com"},
+        "modules": {
+            "dns": {
+                "status": "partial",
+                "hostname": "example.com",
+                "records": {
+                    "A": {"status": "ok", "values": ["192.0.2.10", "192.0.2.11"]},
+                    "AAAA": {"status": "ok", "values": ["2001:db8::10", "2001:db8::11"]},
+                    "MX": {"status": "no_answer"},
+                    "NS": {"status": "no_answer"},
+                    "TXT": {"status": "ok", "values": ["verification-token-" + "x" * 160]},
+                    "CNAME": {"status": "no_answer"},
+                },
+            },
+            "ip": {
+                "status": "ok",
+                "ipv4": ["192.0.2.10", "192.0.2.11"],
+                "ipv6": ["2001:db8::10", "2001:db8::11"],
+                "reverse_dns": ["host-a.example.net", "host-b.example.net"],
+            },
+        },
+    }
+
+    html = generate_html_report(payload)
+
+    for record_type in ("A", "AAAA", "MX", "NS", "TXT", "CNAME"):
+        assert f">{record_type}</td>" in html
+    assert "Target Hostname" in html and "example.com" in html
+    assert "192.0.2.10" in html and "192.0.2.11" in html
+    assert "2001:db8::10" in html and "2001:db8::11" in html
+    assert "host-a.example.net" in html and "host-b.example.net" in html
+    assert "No Answer" in html and "Found" in html
+    assert "Points a hostname to an IPv6 address." in html
+    assert "This does not prove server ownership or identity." in html
+    assert "overflow-wrap: anywhere" in html
+
+
+def test_generate_html_report_distinguishes_empty_failed_and_unchecked_dns():
+    failed_html = generate_html_report({
+        "normalized_target": {"hostname": "failure.example"},
+        "modules": {
+            "dns": {
+                "status": "failed",
+                "hostname": "failure.example",
+                "records": {
+                    "A": {"status": "timeout"},
+                    "AAAA": {"status": "nxdomain"},
+                },
+            },
+            "ip": {"status": "error", "error": "resolution timed out"},
+        },
+    })
+    assert "Lookup failed; record existence is unknown." in failed_html
+    assert "The DNS lookup returned NXDOMAIN; no record values were returned." in failed_html
+    assert ">Failed</span>" in failed_html
+    assert "The DNS lookup reported that the hostname does not exist." not in failed_html
+    assert "Lookup failed; addresses are unknown." in failed_html
+    assert "Not Checked" in failed_html
+
+    empty_html = generate_html_report({
+        "normalized_target": {"hostname": "empty.example"},
+        "modules": {
+            "dns": {
+                "status": "not_found",
+                "hostname": "empty.example",
+                "records": {record_type: {"status": "no_answer"} for record_type in ("A", "AAAA", "MX", "NS", "TXT", "CNAME")},
+            },
+            "ip": {"status": "ok", "ipv4": [], "ipv6": [], "reverse_dns": []},
+        },
+    })
+    assert "No answer received" in empty_html
+    assert "None returned" in empty_html
+    assert "Unavailable" in empty_html
+    assert "<td>0</td>" in empty_html
+
+
+def test_generate_html_report_uses_specialized_module_tables_and_collapsed_raw_data():
+    payload = {
+        "target": "example.com",
+        "normalized_target": {"hostname": "example.com"},
+        "modules": {
+            "whois": {"status": "ok", "registrar": "Example Registrar"},
+            "dns": {"status": "ok", "hostname": "example.com", "records": {}},
+            "ip": {"status": "ok", "ipv4": [], "ipv6": [], "reverse_dns": []},
+            "http": {"status": "ok", "status_code": 200, "final_url": "https://example.com", "content": "RAW_HTTP_BODY_SENTINEL"},
+            "ssl": {"status": "not_https"},
+            "security_headers": {"status": "ok", "headers": {"x_frame_options": "DENY"}},
+            "technology": {"status": "ok", "technologies": ["Apache"]},
+            "robots": {"status": "ok", "url": "https://example.com/robots.txt", "content": "User-agent: *\nDisallow: /private"},
+            "sitemap": {"status": "not_found", "results": [{"url": "https://example.com/sitemap.xml", "status": "not_found"}]},
+        },
+        "exposure": {"findings": [{"title": "Test finding", "severity": "Low", "resource": "/private", "evidence": "Disallow: /private", "recommendation": "Review access controls."}]},
+        "risk": {"overall_rating": "Low", "overall_score": 12, "recommendations": ["Review response headers."]},
+        "report_paths": {"json": "C:\\reports\\example.json", "html": "C:\\reports\\example.html"},
+    }
+
+    html = generate_html_report(payload)
+    visible_report = html.split("<details>", 1)[0]
+
+    for section in (
+        "WHOIS Information", "DNS Summary", "IP Address Information", "HTTP Response",
+        "SSL/TLS Certificate", "Security Headers", "Technology Detection", "robots.txt",
+        "sitemap.xml", "Exposure Findings", "Risk Summary", "Generated Reports",
+    ):
+        assert section in visible_report
+    assert "Security Header" in visible_report and "Observed Value" in visible_report
+    assert "Finding</th>" in visible_report and "Recommended Action" in visible_report
+    assert "Example Registrar" in visible_report and "Apache" in visible_report
+    assert "RAW_HTTP_BODY_SENTINEL" not in visible_report
+    assert "RAW_HTTP_BODY_SENTINEL" in html.split("<details>", 1)[1]
+    assert "<details open" not in html
+    assert "<td>{'status':" not in visible_report
+    assert "href='example.json'" in visible_report
+    assert "id='scan-another-link'" in html
+    assert "href='/app/'" in html
+    assert "Scan another URL" in html
+    assert "C:\\reports" not in visible_report
