@@ -57,6 +57,10 @@ def collect_recon(
         status = result.get("status")
         if status == "ok":
             return "SUCCESS"
+        if status in {"identified", "no_match"}:
+            return "SUCCESS"
+        if status == "incomplete":
+            return "PARTIAL"
         if status == "partial":
             return "PARTIAL"
         if status == "not_found":
@@ -148,19 +152,23 @@ def collect_recon(
         "module_status": module_status,
         "risk": risk,
         "risk_summary": {
-            "security_risk": risk["overall_rating"],
-            "security_score": f"{risk['overall_score']}/100",
-            "exposure_risk": exposure["summary"]["overall_score"],
-            "exposed_resources": exposure["summary"]["total_exposed_resources"],
-            "critical_findings": exposure["summary"]["critical_findings"],
-            "high_findings": exposure["summary"]["high_findings"],
-            "medium_findings": exposure["summary"]["medium_findings"],
-            "low_findings": exposure["summary"]["low_findings"],
+            "risk_interpretation": risk["overall_rating"],
+            "observed_risk_points": risk["overall_score"],
+            "risk_evidence_status": risk["evidence_status"],
+            "exposure_observation_rating": exposure["summary"]["observation_rating"],
+            "unique_candidate_urls": exposure["summary"]["unique_candidate_urls"],
+            "heuristic_observations": exposure["summary"]["heuristic_observations"],
+            "http_checked_candidate_urls": exposure["summary"]["http_checked_candidate_urls"],
+            "http_response_candidate_urls": exposure["summary"]["http_response_candidate_urls"],
+            "confirmed_misconfigurations": exposure["summary"]["confirmed_misconfigurations"],
+            "misconfiguration_assessment": exposure["summary"]["misconfiguration_assessment"],
+            "confirmed_vulnerabilities": exposure["summary"]["confirmed_vulnerabilities"],
+            "observation_severity_counts": exposure["summary"]["severity_counts"],
         },
         "exposure": exposure,
         "executive_summary": (
             "Passive reconnaissance completed successfully. Review the report for key observations "
-            "including DNS, HTTP, SSL, security headers, and exposed resources."
+            "including DNS, HTTP, TLS, security headers, candidate URLs, and heuristic observations."
         ),
     }
 
@@ -187,13 +195,19 @@ def collect_recon(
         "Low": "green",
         "Informational": "cyan",
     }
-    exposure_style = severity_styles.get(exposure["summary"]["overall_score"], "cyan")
-    alert_lines = [f"Overall Exposure Risk: {exposure['summary']['overall_score']}", f"Exposed Resources: {exposure['summary']['total_exposed_resources']}"]
+    exposure_style = severity_styles.get(exposure["summary"]["observation_rating"], "cyan")
+    alert_lines = [
+        f"Exposure Observation Rating: {exposure['summary']['observation_rating']}",
+        f"Unique Candidate URLs: {exposure['summary']['unique_candidate_urls']}",
+        f"Heuristic Observations: {exposure['summary']['heuristic_observations']}",
+        f"Candidate URLs with HTTP Response Evidence: {exposure['summary']['http_checked_candidate_urls']}",
+        f"Candidate URLs with an HTTP response: {exposure['summary']['http_response_candidate_urls']}",
+    ]
     for finding in exposure.get("findings", [])[:6]:
         severity = finding.get("severity", "Informational")
         alert_lines.append(f"[{severity}] {finding.get('title', 'Finding')} | Source: {finding.get('source', 'Other')}")
     if not exposure.get("findings"):
-        alert_lines.append("No exposed resources detected from passive evidence.")
+        alert_lines.append("No heuristic observations were returned; this is not a vulnerability assessment.")
 
     console.print(Panel.fit("\n".join(alert_lines), title="Exposure Alert Panel", border_style=exposure_style))
 
@@ -201,14 +215,18 @@ def collect_recon(
     summary_table.add_column("Metric")
     summary_table.add_column("Value")
     summary_table.add_row("Target", hostname)
-    summary_table.add_row("Security Risk", risk["overall_rating"])
-    summary_table.add_row("Security Score", f"{risk['overall_score']}/100")
-    summary_table.add_row("Exposure Risk", exposure["summary"]["overall_score"])
-    summary_table.add_row("Exposed Resources", str(exposure["summary"]["total_exposed_resources"]))
-    summary_table.add_row("Critical Findings", str(exposure["summary"]["critical_findings"]))
-    summary_table.add_row("High Findings", str(exposure["summary"]["high_findings"]))
-    summary_table.add_row("Medium Findings", str(exposure["summary"]["medium_findings"]))
-    summary_table.add_row("Low Findings", str(exposure["summary"]["low_findings"]))
+    summary_table.add_row("Risk Interpretation", risk["overall_rating"])
+    summary_table.add_row("Observed Risk Points (higher = more risk)", f"{risk['overall_score']}/100")
+    summary_table.add_row("Risk Evidence Status", risk["evidence_status"])
+    summary_table.add_row("Exposure Observation Rating", exposure["summary"]["observation_rating"])
+    summary_table.add_row("Unique Candidate URLs", str(exposure["summary"]["unique_candidate_urls"]))
+    summary_table.add_row("Heuristic Observations", str(exposure["summary"]["heuristic_observations"]))
+    summary_table.add_row("Candidate URLs with HTTP Response Evidence", str(exposure["summary"]["http_checked_candidate_urls"]))
+    summary_table.add_row("Candidate URLs with an HTTP response", str(exposure["summary"]["http_response_candidate_urls"]))
+    summary_table.add_row("Confirmed Misconfigurations", "0 (not confirmed by this engine)")
+    summary_table.add_row("Confirmed Vulnerabilities", "Not assessed")
+    for severity in ("Critical", "High", "Medium", "Low", "Informational"):
+        summary_table.add_row(f"{severity} Observations", str(exposure["summary"]["severity_counts"][severity]))
     summary_table.add_row("Scan Duration", f"{duration:.2f} seconds")
     try:
         display_json_path = str(output_path.relative_to(Path.cwd()))

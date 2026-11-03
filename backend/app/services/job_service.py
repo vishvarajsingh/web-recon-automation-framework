@@ -39,6 +39,7 @@ def run_investigation_job(investigation_id: int, target: str) -> None:
             html_report_location=str(report_path.with_suffix(".html")),
             risk_score=report.get("risk", {}).get("overall_score"),
             risk_rating=report.get("risk", {}).get("overall_rating"),
+            risk_evidence_status=report.get("risk", {}).get("evidence_status", "unknown"),
             progress=100,
             progress_message="Completed",
         )

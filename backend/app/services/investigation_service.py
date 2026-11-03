@@ -1,9 +1,11 @@
 import ipaddress
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
 
 from ..models import Investigation
+from .asset_service import get_or_create_asset
 
 
 def get_target_type(target: str) -> str:
@@ -24,12 +26,17 @@ def get_target_type(target: str) -> str:
 
 
 def create_investigation(db: Session, target: str) -> Investigation:
+    created_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    asset = get_or_create_asset(db, target, seen_at=created_at)
     investigation = Investigation(
+        asset_id=asset.id,
         target=target,
         target_type=get_target_type(target),
         status="pending",
         progress=0,
         progress_message="Queued for execution",
+        created_at=created_at,
+        updated_at=created_at,
     )
     db.add(investigation)
     db.commit()
@@ -47,8 +54,26 @@ def update_investigation(db: Session, investigation: Investigation, **kwargs) ->
 
 
 def delete_investigation(db: Session, investigation: Investigation) -> None:
+    asset_id = investigation.asset_id
     db.delete(investigation)
     db.commit()
+    if asset_id is not None:
+        from ..models import Asset
+
+        asset = db.query(Asset).filter(Asset.id == asset_id).first()
+        if asset is not None:
+            remaining = (
+                db.query(Investigation)
+                .filter(Investigation.asset_id == asset_id)
+                .order_by(Investigation.created_at.asc(), Investigation.id.asc())
+                .all()
+            )
+            if not remaining:
+                db.delete(asset)
+            else:
+                asset.first_seen_at = remaining[0].created_at
+                asset.last_seen_at = remaining[-1].created_at
+            db.commit()
 
 
 def get_investigation(db: Session, investigation_id: int) -> Investigation | None:
@@ -90,13 +115,15 @@ def investigation_summary(db: Session) -> dict:
 
 
 def risk_distribution(db: Session) -> dict[str, int]:
+    completed = db.query(Investigation).filter(Investigation.status == "completed")
+    known = completed.filter(Investigation.risk_evidence_status == "complete")
     ratings = {
-        "Critical": db.query(Investigation).filter(Investigation.risk_rating == "Critical").count(),
-        "High": db.query(Investigation).filter(Investigation.risk_rating == "High").count(),
-        "Medium": db.query(Investigation).filter(Investigation.risk_rating == "Medium").count(),
-        "Low": db.query(Investigation).filter(Investigation.risk_rating == "Low").count(),
-        "Informational": db.query(Investigation).filter(Investigation.risk_rating == "Informational").count(),
+        label: known.filter(Investigation.risk_rating == label).count()
+        for label in ("Critical", "High", "Medium", "Low", "Informational")
     }
+    ratings["Unknown"] = completed.filter(
+        (Investigation.risk_evidence_status != "complete") | (Investigation.risk_evidence_status.is_(None))
+    ).count()
     return ratings
 
 

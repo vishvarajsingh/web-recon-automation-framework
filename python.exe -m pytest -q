@@ -1,0 +1,28 @@
+warning: in the working copy of 'CHANGELOG.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'modules/tech_detector.py', LF will be replaced by CRLF the next time Git touches it
+ CHANGELOG.md                                  |  14 [32m+[m[31m-[m
+ README.md                                     |  77 [32m++++[m[31m--[m
+ backend/app/api/investigations.py             |  16 [32m+[m[31m-[m
+ backend/app/api/web.py                        |  60 [32m++++[m[31m-[m
+ backend/app/main.py                           |   4 [32m+[m[31m-[m
+ backend/app/models.py                         |  25 [32m+[m[31m-[m
+ backend/app/schemas.py                        |  40 [32m++[m[31m-[m
+ backend/app/services/dashboard_service.py     |   3 [32m+[m
+ backend/app/services/investigation_service.py |  37 [32m++[m[31m-[m
+ backend/app/services/job_service.py           |   3 [32m+[m[31m-[m
+ frontend/app/app.js                           | 221 [32m++++++++++++[m[31m----[m
+ frontend/app/index.html                       |  22 [32m+[m[31m-[m
+ frontend/app/styles.css                       |  32 [32m++[m[31m-[m
+ main.py                                       |  58 [32m+++[m[31m--[m
+ modules/exposure_engine.py                    | 109 [32m++++[m[31m----[m
+ modules/http_headers.py                       |  26 [32m+[m[31m-[m
+ modules/risk_engine.py                        |  53 [32m+++[m[31m-[m
+ modules/tech_detector.py                      | 150 [32m++++++++[m[31m---[m
+ reporting/report_generator.py                 | 348 [32m++++++++++++++[m[31m------------[m
+ test_framework.py                             |  22 [32m+[m[31m-[m
+ tests/test_exposure_engine.py                 |  28 [32m++[m[31m-[m
+ tests/test_exposure_intelligence.py           |  35 [32m++[m[31m-[m
+ tests/test_phase1.py                          |  88 [32m++++[m[31m---[m
+ tests/test_phase2_backend.py                  |  16 [32m+[m[31m-[m
+ tests/test_risk_engine.py                     |  43 [32m+++[m[31m-[m
+ 25 files changed, 1126 insertions(+), 404 deletions(-)

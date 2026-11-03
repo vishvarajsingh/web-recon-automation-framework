@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -129,7 +130,7 @@ def test_backend_executes_and_retrieves_recon_report(backend_client, monkeypatch
     report_path.write_text("{}", encoding="utf-8")
 
     def fake_engine(target, output_dir, progress_callback=None):
-        report = {"risk": {"overall_score": 10, "overall_rating": "Low"}, "modules": {}}
+        report = {"risk": {"overall_score": 10, "overall_rating": "Low", "evidence_status": "complete"}, "modules": {}}
         return {"report": report, "report_path": str(report_path)}
 
     monkeypatch.setattr("backend.app.services.job_service.SessionLocal", backend_client.app.state.test_session_factory)
@@ -148,8 +149,14 @@ def test_backend_executes_and_retrieves_recon_report(backend_client, monkeypatch
         report = backend_client.get(f"/api/investigations/{investigation_id}/report", headers={"X-API-Key": "test-key"})
         if report.status_code == 200:
             break
+        time.sleep(0.05)
     assert report.status_code == 200
     assert report.json()["risk"]["overall_rating"] == "Low"
+    investigation = backend_client.get(f"/api/investigations/{investigation_id}", headers={"X-API-Key": "test-key"})
+    assert investigation.json()["risk_evidence_status"] == "complete"
+    dashboard = backend_client.get("/api/dashboard/", headers={"X-API-Key": "test-key"}).json()
+    assert dashboard["risk_distribution"]["Low"] == 1
+    assert dashboard["risk_distribution"]["Unknown"] == 0
 
 
 def test_frontend_is_served_by_fastapi(backend_client):
@@ -158,6 +165,11 @@ def test_frontend_is_served_by_fastapi(backend_client):
     assert "PASSIVE RECONNAISSANCE SERVICE" in response.text
     assert "Scan target" in response.text
     assert "api-key" not in response.text
+    frontend_script = Path(__file__).parents[1] / "frontend" / "app" / "app.js"
+    script_text = frontend_script.read_text(encoding="utf-8")
+    assert "Observed risk points · higher = more risk" in script_text
+    assert "unique_candidate_urls" in script_text
+    assert "No supported technology identified" in script_text
 
 
 def test_public_scanner_accepts_target_without_api_key(backend_client, monkeypatch):

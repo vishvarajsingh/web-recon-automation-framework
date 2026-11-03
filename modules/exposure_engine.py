@@ -1,14 +1,16 @@
-"""Passive exposure detection for publicly exposed resources and misconfigurations."""
+"""Classify passively observed URL references and response indicators."""
 
 import logging
 import re
 from typing import Any, Dict, List
 
+from modules.exposure_candidates import extract_exposure_candidates
+
 logger = logging.getLogger("web_recon")
 
 
 def get_exposure_rating(findings: List[Dict[str, Any]]) -> str:
-    """Aggregate exposure findings into a deterministic exposure risk rating."""
+    """Aggregate observation severity into a deterministic observation rating."""
     if not findings:
         return "Informational"
     if any(finding.get("severity") == "Critical" for finding in findings):
@@ -23,7 +25,7 @@ def get_exposure_rating(findings: List[Dict[str, Any]]) -> str:
 
 
 class ExposureDetectionEngine:
-    """Analyze passive reconnaissance data for exposure indicators."""
+    """Analyze collected references and return heuristic observations, not confirmations."""
 
     def __init__(self) -> None:
         self._severity_order = {"Informational": 0, "Low": 1, "Medium": 2, "High": 3, "Critical": 4}
@@ -41,6 +43,7 @@ class ExposureDetectionEngine:
         reason: str,
         recommendation: str,
         status_code: Any = None,
+        status_resource: Any = None,
         confidence: str = "Low",
         timestamp: Any = None,
     ) -> None:
@@ -57,11 +60,15 @@ class ExposureDetectionEngine:
                 "detection_method": source,
                 "timestamp": timestamp,
                 "status_code": status_code,
+                "status_resource": status_resource,
                 "evidence": evidence,
                 "reason": reason,
                 "potential_impact": reason,
                 "recommendation": recommendation,
                 "references": [],
+                "classification": "heuristic_observation",
+                "confirmed_misconfiguration": False,
+                "confirmed_vulnerability": False,
             }
         )
 
@@ -79,24 +86,24 @@ class ExposureDetectionEngine:
                 path = match.group(1).split()[0]
                 self._add_finding(
                     findings,
-                    title="Potentially Sensitive Path Referenced",
+                    title="Path Referenced in robots.txt",
                     resource=path,
                     category="Other",
-                    severity="Low",
+                    severity="Informational",
                     source="robots.txt",
                     evidence=match.group(0),
-                    reason="A path was publicly referenced in robots.txt and may warrant review for access controls.",
-                    recommendation="Review whether the referenced path should remain publicly discoverable.",
+                    reason="This robots.txt directive references a URL; crawler directives do not establish whether it is accessible or restricted.",
+                    recommendation="Treat this as a URL reference only. Do not infer exposure or vulnerability without separate verification.",
                     status_code=None,
                     timestamp=timestamp,
                 )
 
             for keyword, title, category, severity in [
-                ("/admin", "Administrative Interface Discovered", "Administrative Interface", "Medium"),
-                ("/login", "Authentication Portal Discovered", "Authentication Portal", "Medium"),
-                ("/dashboard", "Dashboard Resource Discovered", "Administrative Interface", "Medium"),
-                ("/api", "API Endpoint Referenced", "API Endpoint", "Medium"),
-                ("/backup", "Backup Resource Referenced", "Backup Resource", "Medium"),
+                ("/admin", "Administrative Path Referenced", "Administrative Interface", "Informational"),
+                ("/login", "Authentication Path Referenced", "Authentication Portal", "Informational"),
+                ("/dashboard", "Dashboard Path Referenced", "Administrative Interface", "Informational"),
+                ("/api", "API Path Referenced", "API Endpoint", "Informational"),
+                ("/backup", "Backup Path Referenced", "Backup Resource", "Informational"),
             ]:
                 if keyword in robots_content.lower():
                     self._add_finding(
@@ -107,8 +114,8 @@ class ExposureDetectionEngine:
                         severity=severity,
                         source="robots.txt",
                         evidence=keyword,
-                        reason="A potentially sensitive path was publicly referenced in robots.txt.",
-                        recommendation="Confirm access controls and authentication requirements for the referenced resource.",
+                        reason="The path name is a heuristic hint only; robots.txt does not establish that the resource exists or is accessible.",
+                        recommendation="Verify the resource and its access controls through an authorized, separately scoped review.",
                         status_code=None,
                         timestamp=timestamp,
                     )
@@ -122,14 +129,14 @@ class ExposureDetectionEngine:
                     category = "API Documentation" if any(token in lower_url for token in ["swagger", "openapi"]) else "Other"
                     self._add_finding(
                         findings,
-                        title="Sensitive Path Referenced in Sitemap",
+                        title="Potentially Sensitive URL Referenced in Sitemap",
                         resource=url,
                         category=category,
-                        severity="Medium",
+                        severity="Informational",
                         source="sitemap.xml",
                         evidence=url,
-                        reason="A sitemap entry referenced a resource that may be sensitive or not intended for public discovery.",
-                        recommendation="Review whether the referenced resource should remain public and restrict access if necessary.",
+                        reason="A sitemap URL matched a path-name heuristic; the reference alone does not establish sensitive content or an access-control issue.",
+                        recommendation="Treat this as a URL reference only and verify the resource before drawing security conclusions.",
                         status_code=None,
                         timestamp=timestamp,
                     )
@@ -149,6 +156,7 @@ class ExposureDetectionEngine:
                 reason="The response revealed server technology information through the HTTP headers.",
                 recommendation="Minimize unnecessary server/version information where operationally appropriate.",
                 status_code=status_code,
+                status_resource=http.get("final_url") or http.get("requested_url"),
                 confidence="Medium",
                 timestamp=timestamp,
             )
@@ -165,6 +173,7 @@ class ExposureDetectionEngine:
                 reason="Response headers revealed platform or framework details that can assist targeting.",
                 recommendation="Remove unnecessary version-specific headers where possible.",
                 status_code=status_code,
+                status_resource=http.get("final_url") or http.get("requested_url"),
                 confidence="Medium",
                 timestamp=timestamp,
             )
@@ -174,57 +183,57 @@ class ExposureDetectionEngine:
             if re.search(r"/login", content, re.IGNORECASE):
                 self._add_finding(
                     findings,
-                    title="Authentication Portal Discovered",
+                    title="Authentication Path Referenced in HTML",
                     resource="/login",
                     category="Authentication Portal",
-                    severity="Medium",
+                    severity="Informational",
                     source="HTML",
                     evidence="/login",
-                    reason="The retrieved page referenced a login path that is publicly visible in the document content.",
-                    recommendation="Ensure the login interface enforces strong authentication and is restricted as appropriate.",
-                    status_code=status_code,
+                    reason="The retrieved page text referenced a login-like path; the path was not requested or verified by this check.",
+                    recommendation="Treat this as a reference only; do not infer an authentication weakness.",
+                    status_code=None,
                     timestamp=timestamp,
                 )
             if re.search(r"/admin", content, re.IGNORECASE):
                 self._add_finding(
                     findings,
-                    title="Administrative Interface Discovered",
+                    title="Administrative Path Referenced in HTML",
                     resource="/admin",
                     category="Administrative Interface",
-                    severity="Medium",
+                    severity="Informational",
                     source="HTML",
                     evidence="/admin",
-                    reason="The retrieved page referenced an administrative path in public content.",
-                    recommendation="Restrict administrative access with strong authentication, authorization, and access controls.",
-                    status_code=status_code,
+                    reason="The retrieved page text referenced an administrative-like path; the path was not requested or verified by this check.",
+                    recommendation="Treat this as a reference only; verify the resource before making security conclusions.",
+                    status_code=None,
                     timestamp=timestamp,
                 )
             if re.search(r"/api/|swagger|openapi", content, re.IGNORECASE):
                 self._add_finding(
                     findings,
-                    title="API Documentation Referenced",
+                    title="API Path Referenced in HTML",
                     resource="API documentation",
                     category="API Documentation",
-                    severity="Medium",
+                    severity="Informational",
                     source="HTML",
                     evidence="API path or documentation reference discovered in public content",
-                    reason="Public content referenced API documentation or related endpoints.",
-                    recommendation="Consider limiting public visibility of API documentation if it should not be broadly accessible.",
-                    status_code=status_code,
+                    reason="The page contained an API-like path or documentation marker; this check did not establish access restrictions.",
+                    recommendation="Treat this as a reference only and review whether the resource is intended to be public.",
+                    status_code=None,
                     timestamp=timestamp,
                 )
             if re.search(r"/\.git|\.env|config(\.php|\.json|\.yaml|\.yml)|backup(\.zip|\.tar|\.gz)", content, re.IGNORECASE):
                 self._add_finding(
                     findings,
-                    title="Potentially Sensitive File Referenced",
+                    title="Potentially Sensitive File Path Referenced in HTML",
                     resource="Sensitive file reference",
                     category="Configuration Resource",
-                    severity="High",
+                    severity="Informational",
                     source="HTML",
                     evidence="Potentially sensitive file or path reference in public content",
-                    reason="Public content referenced a file or path that may be sensitive if exposed.",
-                    recommendation="Verify that any referenced configuration or backup files are not publicly accessible.",
-                    status_code=status_code,
+                    reason="The page text matched a sensitive-file path heuristic; no file request or content verification was performed.",
+                    recommendation="Treat this as a reference only; do not infer that a sensitive file is exposed.",
+                    status_code=None,
                     confidence="Medium",
                     timestamp=timestamp,
                 )
@@ -239,10 +248,10 @@ class ExposureDetectionEngine:
 
         deduped.sort(key=lambda item: self._severity_order.get(item.get("severity"), 0), reverse=True)
 
-        total = len(deduped)
-        critical = sum(1 for finding in deduped if finding.get("severity") == "Critical")
-        medium = sum(1 for finding in deduped if finding.get("severity") == "Medium")
-        low = sum(1 for finding in deduped if finding.get("severity") == "Low")
+        candidates = extract_exposure_candidates(payload)
+        checked_candidates = [item for item in candidates if item["checked"]]
+        response_candidates = [item for item in checked_candidates if item["http_status"] is not None]
+        heuristic_observations = len(deduped)
         severity_counts = {
             severity: sum(1 for finding in deduped if finding.get("severity") == severity)
             for severity in ["Critical", "High", "Medium", "Low", "Informational"]
@@ -251,12 +260,16 @@ class ExposureDetectionEngine:
         return {
             "findings": deduped,
             "summary": {
-                "overall_score": get_exposure_rating(deduped),
-                "total_exposed_resources": total,
-                "critical_findings": critical,
-                "high_findings": severity_counts["High"],
-                "medium_findings": medium,
-                "low_findings": low,
+                "observation_rating": get_exposure_rating(deduped),
+                "unique_candidate_urls": len(candidates),
+                "heuristic_observations": heuristic_observations,
+                "http_checked_candidate_urls": len(checked_candidates),
+                "http_response_candidate_urls": len(response_candidates),
+                "confirmed_misconfigurations": 0,
+                "misconfiguration_assessment": "not_performed",
+                "confirmed_vulnerabilities": 0,
+                "vulnerability_assessment": "not_performed",
+                "severity_counts": severity_counts,
                 "severity_counts": severity_counts,
             },
         }

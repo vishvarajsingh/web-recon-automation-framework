@@ -46,6 +46,30 @@ def test_exposure_engine_detects_sensitive_paths():
     }
 
     result = engine.analyze(payload)
-    assert result["summary"]["total_exposed_resources"] >= 4
+    assert result["summary"]["unique_candidate_urls"] >= 4
+    assert result["summary"]["heuristic_observations"] == len(result["findings"])
+    assert result["summary"]["http_checked_candidate_urls"] == 0
+    assert result["summary"]["confirmed_misconfigurations"] == 0
+    assert result["summary"]["confirmed_vulnerabilities"] == 0
     assert any(finding["resource"] == "/admin" for finding in result["findings"])
-    assert result["summary"]["overall_score"] in {"Critical", "High", "Medium", "Low", "Informational"}
+    admin_findings = [finding for finding in result["findings"] if finding["resource"] == "/admin"]
+    assert all(finding["severity"] == "Informational" for finding in admin_findings)
+    assert all(finding["confirmed_vulnerability"] is False for finding in admin_findings)
+    assert result["summary"]["observation_rating"] in {"Critical", "High", "Medium", "Low", "Informational"}
+
+
+def test_candidate_url_count_is_unique_when_multiple_heuristics_match_same_path():
+    result = ExposureDetectionEngine().analyze({
+        "normalized_target": {"base_url": "https://example.com"},
+        "modules": {
+            "robots": {"status": "ok", "content": "Disallow: /admin\n"},
+            "sitemap": {"status": "ok", "results": [{
+                "status": "found", "content": "<urlset><url><loc>https://example.com/admin</loc></url></urlset>",
+            }]},
+            "http": {"status": "ok", "content": "<a href='/admin'>Admin</a>"},
+        },
+    })
+
+    assert result["summary"]["unique_candidate_urls"] == 1
+    assert result["summary"]["heuristic_observations"] > 1
+    assert result["summary"]["http_checked_candidate_urls"] == 0

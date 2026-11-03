@@ -1,10 +1,10 @@
-"""Centralized security risk scoring for passive reconnaissance findings."""
+"""Centralized scoring of passively observed risk points and evidence coverage."""
 
 from typing import Any, Dict
 
 
 def get_risk_rating(score: int) -> str:
-    """Convert a numeric score into a deterministic risk rating."""
+    """Convert observed risk points (higher means more observed risk) to a rating."""
     if score >= 71:
         return "Critical"
     if score >= 41:
@@ -15,7 +15,7 @@ def get_risk_rating(score: int) -> str:
 
 
 class RiskEngine:
-    """Assign a severity rating to the collected evidence."""
+    """Score observed risk points and report whether required evidence is complete."""
 
     def __init__(self) -> None:
         self._score = 0
@@ -33,7 +33,7 @@ class RiskEngine:
                 "severity": get_risk_rating(points),
                 "confidence": confidence,
                 "evidence": evidence,
-                "reason": f"{name} contributes {points} points to the deterministic security score.",
+                "reason": f"{name} contributes {points} points to the deterministic observed risk-points total.",
             })
 
         security_headers = findings.get("security_headers", {})
@@ -67,15 +67,54 @@ class RiskEngine:
             add_factor("Server error response", 10, f"HTTP response returned status {status_code}.")
 
         score = min(self._score, 100)
-        rating = get_risk_rating(score)
+        # A numeric zero is still useful as the observed-points total, but it is
+        # not an authoritative low-risk conclusion when any input check failed.
+        statuses = {
+            "security_headers": (security_headers.get("status") if isinstance(security_headers, dict) else None),
+            "ssl": (ssl.get("status") if isinstance(ssl, dict) else None),
+            "http": (http.get("status") if isinstance(http, dict) else None),
+        }
+        required_header_fields = {"strict_transport_security", "content_security_policy", "x_frame_options"}
+        headers_complete = (
+            statuses["security_headers"] == "ok"
+            and isinstance(headers, dict)
+            and required_header_fields.issubset(headers)
+        )
+        http_complete = False
+        if statuses["http"] == "ok":
+            try:
+                http_code = int(http.get("status_code")) if isinstance(http, dict) else None
+                http_complete = http_code is not None and 100 <= http_code <= 599
+            except (TypeError, ValueError):
+                http_complete = False
+        ssl_complete = statuses["ssl"] == "not_https"
+        if statuses["ssl"] == "ok" and isinstance(ssl, dict) and isinstance(ssl.get("expired"), bool):
+            if ssl["expired"]:
+                ssl_complete = True
+            else:
+                try:
+                    ssl_complete = int(ssl.get("days_remaining")) >= 0
+                except (TypeError, ValueError):
+                    ssl_complete = False
+        complete = headers_complete and http_complete and ssl_complete
+        observed_rating = get_risk_rating(score)
+        rating = observed_rating if complete else "Unknown"
 
         return {
             "overall_score": score,
             "overall_rating": rating,
+            "observed_risk_rating": observed_rating,
+            "evidence_status": "complete" if complete else "incomplete",
+            "evidence_completeness": {
+                "security_headers": {"status": statuses["security_headers"], "complete": headers_complete},
+                "http": {"status": statuses["http"], "complete": http_complete},
+                "ssl": {"status": statuses["ssl"], "complete": ssl_complete},
+            },
             "score_out_of": "100",
-            "confidence": "High" if factors else "Medium",
+            "confidence": "High" if complete and factors else "Medium" if complete else "Low",
             "factors": factors,
-            "explanation": "Score is the sum of distinct observed checks, capped at 100. Missing or failed checks do not add points.",
+            "score_meaning": "Observed risk points; higher points mean more observed risk. This is not a security protection score or probability.",
+            "explanation": "Observed risk points are the sum of distinct scored conditions, capped at 100. Missing or failed checks add no points and make the risk rating Unknown until evidence is complete.",
             "recommendations": [
                 "Enable HSTS and a strong Content-Security-Policy.",
                 "Renew any expiring TLS certificates promptly.",

@@ -1,12 +1,14 @@
 import json
 import re
 from copy import deepcopy
+from datetime import date, datetime
 from html import escape
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import quote
 from xml.etree import ElementTree
 
+from modules.exposure_candidates import extract_exposure_candidates as _extract_exposure_candidates
 
 SEVERITY_ORDER = ["Critical", "High", "Medium", "Low", "Informational"]
 SEVERITY_COLORS = {
@@ -119,6 +121,42 @@ def _value_html(value: Any, empty: str = "Not returned") -> str:
     return escape(_display_text(value, empty))
 
 
+def _canonical_ipv6_from_dns(dns: Dict[str, Any]) -> tuple[Any, str]:
+    """Return the canonical AAAA values and a display state from DNS evidence."""
+    records = dns.get("records") if isinstance(dns.get("records"), dict) else {}
+    record = records.get("AAAA") if isinstance(records.get("AAAA"), dict) else {}
+    state = record.get("status")
+    values = record.get("values")
+    if state == "ok" and isinstance(values, (list, tuple)):
+        return values, "ok"
+    if state == "no_answer":
+        return [], "no_answer"
+    if state in {"error", "timeout", "nxdomain", "failed"}:
+        return None, "failed"
+    return None, "not_checked"
+
+
+def _format_whois_expiration(value: Any) -> str:
+    """Render expiration values as unique calendar dates, retaining JSON evidence elsewhere."""
+    values = value if isinstance(value, (list, tuple, set)) else [value]
+    normalized = []
+    for item in values:
+        text = _display_text(item, "")
+        if not text:
+            continue
+        date_text = text
+        try:
+            date_text = datetime.fromisoformat(text.replace("Z", "+00:00")).date().isoformat()
+        except (ValueError, TypeError):
+            try:
+                date_text = date.fromisoformat(text[:10]).isoformat()
+            except (ValueError, TypeError):
+                pass
+        if date_text not in normalized:
+            normalized.append(date_text)
+    return ", ".join(normalized) if normalized else "Not returned"
+
+
 def _table(headers: Sequence[str], rows: Iterable[Sequence[str]], class_name: str = "report-table") -> str:
     header_html = "".join(f"<th scope='col'>{escape(header)}</th>" for header in headers)
     row_html = "".join(
@@ -145,8 +183,12 @@ def _dns_rows(dns: Dict[str, Any]) -> tuple[list[list[str]], dict[str, Any]]:
         raw_status = record.get("status")
         values = record.get("values")
         if raw_status == "ok":
-            status_label = "Found"
-            value = _value_html(values)
+            if record_type == "AAAA" and not isinstance(values, (list, tuple)):
+                status_label = "Unavailable"
+                value = "DNS AAAA lookup returned no usable address data; IPv6 addresses are unknown."
+            else:
+                status_label = "Found"
+                value = _value_html(values)
         elif raw_status == "no_answer":
             status_label = "No Answer"
             value = "No answer received"
@@ -174,6 +216,13 @@ def _render_dns_section(dns: Dict[str, Any], hostname: Any) -> str:
     status_result = _badge(_status_label(overall_status), str(overall_status or "not_checked"))
 
     def address_count(record_type: str) -> str:
+        if record_type == "AAAA":
+            values, state = _canonical_ipv6_from_dns(dns)
+            if state == "ok":
+                return str(len(values))
+            if state == "no_answer":
+                return "0"
+            return "Unavailable" if state == "failed" else "Not checked"
         record = records.get(record_type)
         if not isinstance(record, dict) or not record.get("status"):
             return "Not checked"
@@ -199,16 +248,23 @@ def _render_dns_section(dns: Dict[str, Any], hostname: Any) -> str:
     )
 
 
-def _render_ip_section(ip_info: Dict[str, Any]) -> str:
+def _render_ip_section(ip_info: Dict[str, Any], dns: Dict[str, Any] | None = None) -> str:
     status = ip_info.get("status")
+    ipv6_values, ipv6_state = _canonical_ipv6_from_dns(dns or {})
     if status in {"error", "failed"}:
         ipv4 = "Lookup failed; addresses are unknown."
-        ipv6 = "Lookup failed; addresses are unknown."
         reverse = "Lookup failed; reverse DNS is unknown."
     else:
         ipv4 = _value_html(ip_info.get("ipv4"), "None returned")
-        ipv6 = _value_html(ip_info.get("ipv6"), "None returned")
         reverse = _value_html(ip_info.get("reverse_dns"), "Unavailable")
+    if ipv6_state == "ok":
+        ipv6 = _value_html(ipv6_values, "None returned")
+    elif ipv6_state == "no_answer":
+        ipv6 = "None returned"
+    elif ipv6_state == "failed":
+        ipv6 = "DNS AAAA lookup failed; IPv6 addresses are unknown."
+    else:
+        ipv6 = "DNS AAAA lookup not available; IPv6 addresses are unknown."
     rows = [
         ["IPv4 Addresses", ipv4, "Addresses using IPv4."],
         ["IPv6 Addresses", ipv6, "Addresses using IPv6."],
@@ -227,6 +283,9 @@ def _render_whois_section(data: Dict[str, Any]) -> str:
         for key, (label, explanation) in WHOIS_FIELDS.items():
             value = data.get(key)
             if value is not None and value != "" and value != []:
+                if key == "expiration_date":
+                    rows.append([escape(label), escape(_format_whois_expiration(value)), escape(explanation)])
+                    continue
                 rows.append([escape(label), _value_html(value), escape(explanation)])
     return _section("WHOIS Information", _table(["Metric", "Result", "What It Means"], rows, "report-table whois-table"), "whois-information")
 
@@ -305,31 +364,59 @@ def _render_security_headers(data: Dict[str, Any]) -> str:
 
 def _render_technology_section(data: Dict[str, Any]) -> str:
     technologies = data.get("technologies") if isinstance(data.get("technologies"), list) else []
-    if data.get("status") in {"error", "failed"}:
-        rows = [["Technology check", _badge("Failed", "failed"), _value_html(data.get("error"), "Check failed; no conclusion can be made.")]]
-    elif technologies:
-        rows = [[escape(str(name)), _badge("Detected", "found"), "Observed from passive page or response indicators."] for name in technologies]
+    detections = data.get("detections") if isinstance(data.get("detections"), list) else [
+        {"name": name, "confidence": "Not reported", "evidence": []} for name in technologies
+    ]
+    state = data.get("status")
+    if state in {"error", "failed"}:
+        rows = [["Technology check", _badge("Detection failed", "failed"), "", _value_html(data.get("error"), "Check failed; no conclusion can be made.")]]
+    elif state == "incomplete":
+        rows = [["Technology check", _badge("Detection incomplete", "not_checked"), "Partial passive evidence", "Collected response content was truncated; absence of a match is inconclusive."]]
+        rows.extend([[escape(str(item.get("name"))), _badge("Identified", "found"), escape(str(item.get("confidence", "Not reported"))), _value_html(item.get("evidence", []))] for item in detections if isinstance(item, dict)])
+    elif detections:
+        rows = [[escape(str(item.get("name"))), _badge("Identified", "found"), escape(str(item.get("confidence", "Not reported"))), _value_html(item.get("evidence", []))] for item in detections if isinstance(item, dict)]
     else:
-        rows = [["No technology identified", _badge("None detected", "not_found"), "No supported technology was identified from the collected passive indicators."]]
-    return _section("Technology Detection", _table(["Technology", "Result", "What It Means"], rows, "report-table technology-table"), "technology-detection")
+        rows = [["No supported technology identified", _badge("No supported match", "not_found"), "N/A", "The complete collected passive indicators did not match supported signatures."]]
+    return _section("Technology Detection", _table(["Technology", "Detection State", "Confidence", "Supporting Evidence"], rows, "report-table technology-table"), "technology-detection")
 
 
 def _render_robots_section(data: Dict[str, Any]) -> str:
     status = data.get("status")
-    rows = []
     if status in {"error", "failed", "not_found"} or not status:
         message = data.get("error") or ("No robots.txt response was found." if status == "not_found" else "Not checked.")
-        rows.append(["robots.txt", _badge(_status_label(status), str(status or "not_checked")), _value_html(data.get("url"), "Not available"), escape(_display_text(message)), "A robots.txt file gives crawler guidance; its rules do not enforce access control."])
-    else:
-        content = data.get("content", "")
-        directives = [line.strip() for line in str(content).splitlines() if line.strip() and not line.lstrip().startswith("#")]
-        if directives:
-            for directive in directives:
-                name, separator, value = directive.partition(":")
-                rows.append([escape(name.strip()), _badge("Found", "found"), escape(value.strip() if separator else ""), escape(directive), "Crawler guidance only; these rules do not block visitors or prove that a path is private."])
+        rows = [["robots.txt", _badge(_status_label(status), str(status or "not_checked")), _value_html(data.get("url"), "Not available"), escape(_display_text(message))]]
+        return _section("robots.txt", _table(["Source", "Status", "URL", "Result"], rows, "report-table robots-table"), "robots")
+
+    content = data.get("content", "")
+    lines = [line.strip() for line in str(content).splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    categories: dict[str, list[str]] = {name: [] for name in ("Allow", "Disallow", "User-agent", "Sitemap", "Other directives")}
+    for line in lines:
+        name, separator, value = line.partition(":")
+        key = name.strip().lower() if separator else ""
+        if key == "allow":
+            categories["Allow"].append(value.strip())
+        elif key == "disallow":
+            categories["Disallow"].append(value.strip())
+        elif key == "user-agent":
+            categories["User-agent"].append(value.strip())
+        elif key == "sitemap":
+            categories["Sitemap"].append(value.strip())
         else:
-            rows.append(["robots.txt", _badge("Found", "found"), _value_html(data.get("url"), "URL not returned"), "No directives were returned.", "An empty robots.txt does not provide crawler restrictions."])
-    return _section("robots.txt", _table(["Item", "Status", "Value", "Observed Rule", "What It Means"], rows, "report-table robots-table"), "robots")
+            categories["Other directives"].append(line)
+
+    rows = [
+        ["Allow", str(len(categories["Allow"])), str(len(set(categories["Allow"]))), "Directive count and unique path count."],
+        ["Disallow", str(len(categories["Disallow"])), str(len(set(categories["Disallow"]))), "Directive count and unique path count."],
+        ["User-agent", str(len(categories["User-agent"])), "N/A", "Agent groups declared."],
+        ["Sitemap", str(len(categories["Sitemap"])), "N/A", "Sitemap references declared."],
+        ["Other directives", str(len(categories["Other directives"])), "N/A", "Other non-comment lines."],
+    ]
+    table = _table(["Directive Category", "Directive Count", "Unique Paths", "Meaning"], rows, "report-table robots-table")
+    note = "Crawler guidance only; robots.txt rules do not enforce access control or prove that a path is private."
+    if data.get("content_truncated"):
+        note += " Collected content was truncated; counts and evidence are incomplete."
+    details = f"<details class='robots-evidence'><summary>Full robots.txt directive evidence</summary><pre>{escape(str(content))}</pre></details>"
+    return _section("robots.txt", f"<p>{escape(note)}</p>{table}{details}", "robots")
 
 
 def _sitemap_locations(content: Any) -> list[str]:
@@ -342,140 +429,51 @@ def _sitemap_locations(content: Any) -> list[str]:
     return [element.text.strip() for element in root.iter() if element.tag.rsplit("}", 1)[-1] == "loc" and element.text and element.text.strip()]
 
 
-def _normalize_candidate(resource: Any, base_url: Any) -> tuple[str, bool] | None:
-    if not isinstance(resource, str) or not resource.strip():
-        return None
-    value = resource.strip()
-    if "\\" in value or any(character.isspace() for character in value) or re.search(r"%(?![0-9a-fA-F]{2})", value):
-        return None
-    try:
-        parsed = urlsplit(value)
-        base = urlsplit(str(base_url or ""))
-        if parsed.scheme or parsed.netloc:
-            if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
-                return None
-            host = parsed.hostname.lower()
-            if not re.fullmatch(r"[a-z0-9.:-]+", host):
-                return None
-            try:
-                port = parsed.port
-            except ValueError:
-                return None
-            netloc = host if port is None else f"{host}:{port}"
-            path = re.sub(r"/{2,}", "/", parsed.path or "/")
-            normalized = urlunsplit((parsed.scheme.lower(), netloc, path.rstrip("/") or "/", parsed.query, ""))
-            same_host = bool(base.hostname and host == base.hostname.lower())
-            if same_host:
-                return urlunsplit(("", "", path.rstrip("/") or "/", parsed.query, "")), False
-            return normalized, True
-
-        if not value.startswith("/") or value.startswith("//"):
-            return None
-        path = re.sub(r"/{2,}", "/", parsed.path or "/")
-        normalized = urlunsplit(("", "", path.rstrip("/") or "/", parsed.query, ""))
-        return normalized, False
-    except (TypeError, ValueError):
-        return None
-
-
-def _extract_exposure_candidates(payload: Dict[str, Any]) -> list[Dict[str, Any]]:
-    modules = payload.get("modules") if isinstance(payload.get("modules"), dict) else {}
-    normalized = payload.get("normalized_target") if isinstance(payload.get("normalized_target"), dict) else {}
-    base_url = normalized.get("base_url")
-    candidates: dict[str, Dict[str, Any]] = {}
-
-    def add_candidate(resource: Any, source: str, evidence: str) -> None:
-        normalized_candidate = _normalize_candidate(resource, base_url)
-        if normalized_candidate is None:
-            return
-        value, external = normalized_candidate
-        entry = candidates.setdefault(value, {"resource": value, "sources": [], "evidence": [], "external": external})
-        if source not in entry["sources"]:
-            entry["sources"].append(source)
-        if evidence and evidence not in entry["evidence"]:
-            entry["evidence"].append(evidence)
-        entry["external"] = entry["external"] or external
-
-    robots = modules.get("robots") if isinstance(modules.get("robots"), dict) else {}
-    if robots.get("status") == "ok":
-        for line in str(robots.get("content") or "").splitlines():
-            match = re.match(r"\s*(?:Disallow|Allow)\s*:\s*(.*?)\s*(?:#.*)?$", line, re.IGNORECASE)
-            if match:
-                add_candidate(match.group(1).strip(), "robots.txt", line.strip())
-
-    sitemap = modules.get("sitemap") if isinstance(modules.get("sitemap"), dict) else {}
-    for result in sitemap.get("results", []):
-        if not isinstance(result, dict) or result.get("status") != "found":
-            continue
-        for location in _sitemap_locations(result.get("content")):
-            add_candidate(location, "sitemap.xml", location)
-
-    http = modules.get("http") if isinstance(modules.get("http"), dict) else {}
-    final_url = _normalize_candidate(http.get("final_url"), base_url)
-    final_resource = final_url[0] if final_url and not final_url[1] else None
-    status_code = http.get("status_code")
-    try:
-        status_code = int(status_code) if status_code is not None else None
-    except (TypeError, ValueError):
-        status_code = None
-    if status_code is not None and not 100 <= status_code <= 599:
-        status_code = None
-
-    requested_root = _normalize_candidate(base_url, base_url)
-    requested_resource = requested_root[0] if requested_root else None
-    request_failed = str(http.get("status", "")).lower() in {"error", "failed"}
-    for candidate in candidates.values():
-        candidate.update({"checked": False, "http_status": None, "category": "Publicly Referenced"})
-        if candidate["external"]:
-            candidate["category"] = "Requires Review"
-        elif status_code is not None and candidate["resource"] == final_resource:
-            candidate.update({"checked": True, "http_status": status_code})
-            candidate["category"] = "HTTP Accessible" if 200 <= status_code < 300 else "Requires Review"
-        elif request_failed and candidate["resource"] == requested_resource:
-            candidate.update({"checked": True, "category": "Check Failed"})
-
-    return list(candidates.values())
-
-
 def _render_exposure_intelligence(payload: Dict[str, Any]) -> str:
     candidates = _extract_exposure_candidates(payload)
     rows = []
     checked_count = sum(1 for candidate in candidates if candidate["checked"])
     for candidate in candidates:
         category = candidate["category"]
-        if category == "HTTP Accessible":
-            assessment = f"HTTP Accessible: the existing scan received a response for this exact resource (HTTP {candidate['http_status']}); this does not determine authorization."
-            action = "Review authentication and authorization within the approved scope."
-            status = f"HTTP {candidate['http_status']} · {category}"
-        elif category == "Check Failed":
-            assessment = "Check Failed: the existing request to this exact resource did not complete; availability is unknown."
-            action = "Treat the result as unknown; retry only within the authorized scope."
-            status = category
+        if category == "Check Failed":
+            assessment = "The existing scan attempted this exact URL but did not receive a usable response; availability is unknown."
+            action = "Treat as unknown; this feature makes no retry or follow-up request."
+            status = "Request attempted · no response"
+        elif candidate["checked"] and candidate["http_status"] is None:
+            assessment = "The existing scan recorded an attempt for this exact URL but no status code; no access conclusion is made."
+            action = "Treat as unknown; this feature makes no retry or follow-up request."
+            status = "Request observed · status unavailable"
+        elif candidate["checked"]:
+            code = candidate["http_status"]
+            assessment = "An HTTP response was recorded for this exact requested URL. A response does not establish authorization, sensitive content, or vulnerability."
+            action = "Interpret only the recorded response for this exact URL; this feature does not request candidate paths."
+            status = f"HTTP response observed{f' ({code})' if code is not None else ''}"
         elif category == "Requires Review":
-            assessment = "Requires Review: URL is outside the scanned hostname or returned a non-success status; no access conclusion is made."
+            assessment = "URL is outside the scanned hostname. It was not requested, and no access conclusion is made."
             action = "Confirm authorization and scope before any manual follow-up."
-            status = f"HTTP {candidate['http_status']} · {category}" if candidate["http_status"] else f"Not checked · {category}"
+            status = "Not requested · external reference"
         else:
-            assessment = "Publicly Referenced: this listing alone does not show whether access is restricted."
-            action = "Verify access controls manually within the authorized scope."
-            status = "Not checked · Publicly Referenced"
+            assessment = "This URL was referenced in collected evidence but was not requested by the scan. The reference does not show whether access is restricted."
+            action = "Treat as a candidate reference; do not infer exposure or vulnerability."
+            status = "Not requested · candidate reference"
         rows.append([
             _value_html(candidate["resource"]),
             escape(", ".join(candidate["sources"])),
-            _badge(status, "found" if category == "HTTP Accessible" else "failed" if category == "Check Failed" else "not_checked"),
+            _badge(status, "found" if candidate["checked"] else "not_checked"),
             _value_html(candidate["evidence"]),
             escape(assessment),
             escape(action),
         ])
 
     summary_rows = [
-        ["Candidate paths discovered", escape(str(len(candidates)))],
-        ["Paths actually checked", escape(str(checked_count))],
-        ["Path requests made by this feature", "0"],
+        ["Unique candidate URLs referenced", escape(str(len(candidates)))],
+        ["Candidate URLs with an exact-request attempt", escape(str(checked_count))],
+        ["Candidate URLs with an HTTP response", escape(str(sum(1 for item in candidates if item["http_status"] is not None)))],
+        ["Additional candidate-path requests made", "0"],
     ]
     body = _table(["Metric", "Count"], summary_rows, "report-table exposure-intelligence-summary")
     body += _table(
-        ["Resource", "Source", "Status", "Evidence", "Assessment", "Recommended Action"],
+        ["Candidate URL", "Source", "HTTP Evidence", "Reference Evidence", "Assessment", "Recommended Action"],
         rows,
         "report-table exposure-intelligence-table",
     )
@@ -493,6 +491,8 @@ def _render_sitemap_section(data: Dict[str, Any]) -> str:
             locations = _sitemap_locations(result.get("content"))
             result_value = _value_html(locations, "Sitemap found; no locations were extracted.")
             explanation = "Public sitemap location listed in the response. These entries are discovery information, not access-control results."
+            if result.get("content_truncated"):
+                explanation += " Content was truncated; candidate inventory and scan comparison are incomplete."
         elif raw_status == "failed":
             result_value = _value_html(result.get("error"), "Lookup failed; availability is unknown.")
             explanation = "The sitemap check failed, so its availability is unknown."
@@ -521,38 +521,49 @@ def _render_findings(findings: list[Dict[str, Any]]) -> str:
             _value_html(finding.get("recommendation"), "No recommendation provided"),
         ] for finding in severity_findings]
         tables.append(f"<h3>{escape(severity)} ({len(rows)})</h3>" + _table(
-            ["Finding", "Severity", "Confidence", "Affected Resource", "Detection Method", "Evidence", "Potential Impact", "Recommended Action"],
+            ["Heuristic Observation", "Potential Severity", "Confidence", "Referenced Resource", "Evidence Source", "Evidence", "Why It Was Flagged", "Recommended Action"],
             rows,
             "report-table findings-table",
         ))
     if not tables:
-        tables.append("<p>No findings returned by the detection engine.</p>")
-    return _section("Exposure Findings", "".join(tables), "exposure-findings")
+        tables.append("<p>No heuristic observations returned by the detection engine.</p>")
+    return _section("Heuristic Observations", "".join(tables), "heuristic-observations")
 
 
 def _render_risk(payload: Dict[str, Any], findings: list[Dict[str, Any]]) -> str:
     summary = payload.get("risk_summary") if isinstance(payload.get("risk_summary"), dict) else {}
     risk = payload.get("risk") if isinstance(payload.get("risk"), dict) else {}
     exposure_summary = payload.get("exposure", {}).get("summary", {})
-    security_risk = summary.get("security_risk", risk.get("overall_rating"))
-    security_score = summary.get("security_score")
+    security_risk = summary.get("risk_interpretation", risk.get("overall_rating"))
+    security_score = summary.get("observed_risk_points")
     if security_score is None and risk.get("overall_score") is not None:
-        security_score = f"{risk['overall_score']}/100"
-    exposure_risk = summary.get("exposure_risk", exposure_summary.get("overall_score"))
+        security_score = risk["overall_score"]
+    if security_score is not None:
+        security_score = f"{security_score}/100"
+    exposure_risk = summary.get("exposure_observation_rating", exposure_summary.get("observation_rating", exposure_summary.get("overall_score")))
+    evidence_status = risk.get("evidence_status", "unknown")
+    if evidence_status != "complete":
+        security_risk = "Unknown"
     rows = [
-        ["Security Risk", _badge(_display_text(security_risk, "Not calculated"), str(security_risk or "").lower()), "Calculated from the security checks collected by the scanner."],
-        ["Security Score", escape(_display_text(security_score, "Not calculated")), "Score from the framework's security-risk calculation; it is not an exposure count."],
-        ["Exposure Risk", _badge(_display_text(exposure_risk, "Not calculated"), str(exposure_risk or "").lower()), "Rating based on discovered exposure findings."],
+        ["Observed Risk Points", escape(_display_text(security_score, "Not calculated")), "Higher points mean more observed risk. This is not a security protection score or probability."],
+        ["Risk Interpretation", _badge(_display_text(security_risk, "Not calculated"), str(security_risk or "").lower()), f"Evidence status: {escape(str(evidence_status))}. Incomplete required checks produce Unknown."],
+        ["Exposure Observation Rating", _badge(_display_text(exposure_risk, "Not calculated"), str(exposure_risk or "").lower()), "Rating summarizes heuristic observations; it does not confirm exposure or vulnerability."],
+        ["Unique Candidate URLs", escape(str(exposure_summary.get("unique_candidate_urls", 0)))],
+        ["Heuristic Observations", escape(str(exposure_summary.get("heuristic_observations", len(findings))))],
+        ["Candidate URLs with Exact HTTP Request Attempt", escape(str(exposure_summary.get("http_checked_candidate_urls", 0)))],
+        ["Candidate URLs with HTTP Response", escape(str(exposure_summary.get("http_response_candidate_urls", 0)))],
+        ["Confirmed Misconfigurations", "Not assessed by this engine"],
+        ["Confirmed Vulnerabilities", "Not assessed by this framework"],
     ]
     recommendations = risk.get("recommendations")
     if recommendations:
-        rows.append(["Recommendations", _value_html(recommendations), "Suggestions produced by the security-risk calculation."])
+        rows.append(["Recommendations", _value_html(recommendations), "Suggestions produced by the observed risk-points calculation."])
     severity_counts = exposure_summary.get("severity_counts", {})
     severity_rows = []
     meanings = {
-        "Critical": "Requires immediate review.", "High": "Should be reviewed promptly.",
-        "Medium": "Review and address as appropriate.", "Low": "Lower-priority observation.",
-        "Informational": "Context only; not necessarily a security issue.",
+        "Critical": "Potential priority only; verify evidence and impact.", "High": "Potential priority only; verify evidence and impact.",
+        "Medium": "Heuristic observation; confirm before treating as an issue.", "Low": "Lower-priority observation; confirm before treating as an issue.",
+        "Informational": "Reference or context only; not a confirmed security issue.",
     }
     for severity in SEVERITY_ORDER:
         count = severity_counts.get(severity)
@@ -560,6 +571,10 @@ def _render_risk(payload: Dict[str, Any], findings: list[Dict[str, Any]]) -> str
             count = sum(1 for finding in findings if finding.get("severity") == severity)
         severity_rows.append([_badge(severity, severity.lower()), escape(str(count)), escape(meanings[severity])])
     body = _table(["Metric", "Result", "Explanation"], rows, "report-table risk-table")
+    body += (
+        "<p><strong>Unique Candidate URLs:</strong> normalized and deduplicated URLs referenced by passive sources such as robots.txt, sitemaps, and HTML.</p>"
+        "<p><strong>Heuristic Observations:</strong> records deduplicated by (resource, severity, title). They are heuristic records, not verified resources, confirmed vulnerabilities, or confirmed misconfigurations.</p>"
+    )
     factors = risk.get("factors") if isinstance(risk.get("factors"), list) else []
     if factors:
         factor_rows = [[
@@ -572,7 +587,7 @@ def _render_risk(payload: Dict[str, Any], findings: list[Dict[str, Any]]) -> str
         body += "<h3>Score Contributions</h3>" + _table(["Observed Condition", "Points", "Confidence", "Evidence", "Why It Contributes"], factor_rows, "report-table risk-factors-table")
     if risk.get("explanation"):
         body += f"<p>{_value_html(risk.get('explanation'))}</p>"
-    body += "<h3>Finding Severity</h3>" + _table(["Severity", "Count", "Meaning"], severity_rows, "report-table severity-table")
+    body += "<h3>Heuristic Observation Severity</h3>" + _table(["Potential Severity", "Count", "Meaning"], severity_rows, "report-table severity-table")
     return _section("Risk Summary", body, "risk-summary")
 
 
@@ -607,23 +622,32 @@ def generate_html_report(payload: Dict[str, Any]) -> str:
     scan_date = escape(_display_text(payload.get("timestamp"), "n/a"))
     duration = escape(_display_text(metadata.get("duration_seconds"), "n/a"))
 
-    security_risk = risk_summary.get("security_risk")
+    security_risk = risk_summary.get("risk_interpretation")
     if security_risk is None:
         security_risk = payload.get("risk", {}).get("overall_rating")
-    security_score = risk_summary.get("security_score")
+    if payload.get("risk", {}).get("evidence_status") != "complete":
+        security_risk = "Unknown"
+    security_score = risk_summary.get("observed_risk_points")
     if security_score is None and payload.get("risk", {}).get("overall_score") is not None:
-        security_score = f"{payload['risk']['overall_score']}/100"
-    exposure_risk = risk_summary.get("exposure_risk", exposure_summary.get("overall_score"))
-    total_exposed = exposure_summary.get("total_exposed_resources", risk_summary.get("exposed_resources"))
+        security_score = payload["risk"]["overall_score"]
+    if security_score is not None:
+        security_score = f"{security_score}/100"
+    exposure_risk = risk_summary.get("exposure_observation_rating", exposure_summary.get("observation_rating"))
     summary_rows = [
         ["Target", _value_html(target_value, "Unknown target")],
         ["Hostname", _value_html(hostname_value, "Unknown")],
         ["Scan Date", _value_html(payload.get("timestamp"))],
         ["Scan Duration", _value_html(f"{metadata['duration_seconds']} seconds" if metadata.get("duration_seconds") is not None else None)],
-        ["Security Risk", _badge(_display_text(security_risk, "Not calculated"), str(security_risk or "").lower())],
-        ["Security Score", escape(_display_text(security_score, "Not calculated"))],
-        ["Exposure Risk", _badge(_display_text(exposure_risk, "Not calculated"), str(exposure_risk or "").lower())],
-        ["Exposed Resources", escape(_display_text(total_exposed, "Not reported"))],
+        ["Risk Interpretation", _badge(_display_text(security_risk, "Not calculated"), str(security_risk or "").lower())],
+        ["Observed Risk Points", escape(_display_text(security_score, "Not calculated"))],
+        ["Evidence Completeness", escape(_display_text(payload.get("risk", {}).get("evidence_status"), "Unknown"))],
+        ["Exposure Observation Rating", _badge(_display_text(exposure_risk, "Not calculated"), str(exposure_risk or "").lower())],
+        ["Unique Candidate URLs", escape(str(exposure_summary.get("unique_candidate_urls", 0)))],
+        ["Heuristic Observations", escape(str(exposure_summary.get("heuristic_observations", len(findings))))],
+        ["Candidate URLs with Exact HTTP Request Attempt", escape(str(exposure_summary.get("http_checked_candidate_urls", 0)))],
+        ["Candidate URLs with HTTP Response", escape(str(exposure_summary.get("http_response_candidate_urls", 0)))],
+        ["Confirmed Misconfigurations", "Not assessed by this engine"],
+        ["Confirmed Vulnerabilities", "Not assessed by this framework"],
     ]
     executive_summary = _section(
         "Executive Summary",
@@ -645,7 +669,7 @@ def generate_html_report(payload: Dict[str, Any]) -> str:
         executive_summary,
         scope_methodology,
         _render_dns_section(modules.get("dns", {}), hostname_value),
-        _render_ip_section(modules.get("ip", {})),
+        _render_ip_section(modules.get("ip", {}), modules.get("dns", {})),
         _render_whois_section(modules.get("whois", {})),
         _render_http_section(modules.get("http", {})),
         _render_ssl_section(modules.get("ssl", {})),
@@ -659,7 +683,7 @@ def generate_html_report(payload: Dict[str, Any]) -> str:
         _render_report_links(payload),
         _section(
             "Limitations and Disclaimer",
-            "<p>Results are point-in-time observations and do not establish exploitability, authorization, or the absence of vulnerabilities. Technology identification is not confirmation of a CVE. Missing or failed checks are unknown, not evidence of safety. Use this report only for systems you own or are explicitly authorized to assess.</p>",
+            "<p>Risk points count observed conditions; higher points mean more observed risk. Incomplete checks make the risk interpretation Unknown. Candidate URLs and heuristic observations do not establish access, misconfiguration, or vulnerability. This framework does not perform vulnerability confirmation. Missing or failed checks are unknown, not evidence of safety. Use this report only for systems you own or are explicitly authorized to assess.</p>",
             "limitations-disclaimer",
         ),
     ]

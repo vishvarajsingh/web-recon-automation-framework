@@ -1,5 +1,5 @@
 const apiBase = "/web-api";
-const state = { investigationId: null, timer: null, copyTimer: null, lastTarget: "" };
+const state = { investigationId: null, timer: null, copyTimer: null, lastTarget: "", assetId: null, assetSkip: 0, assetTotal: 0, assetLimit: 50, historySkip: 0, historyTotal: 0, historyLimit: 10, availableScans: new Map() };
 const scanWords = ["SCANNING TARGET", "ANALYZING", "RECON", "COLLECTING DATA"];
 const awarenessLines = [
   "Public evidence only. No intrusive requests.",
@@ -68,6 +68,115 @@ function stopScanCopy() {
 
 function makeFile(label, tag, data, icon) {
   return { label, tag, data, icon, available: data !== undefined && data !== null };
+}
+
+function prettyValue(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  return typeof value === "object" ? JSON.stringify(value) : String(value);
+}
+
+async function loadAssets(preferredId = state.assetId, skip = state.assetSkip) {
+  const stateNode = $("asset-state");
+  try {
+    state.assetSkip = Math.max(0, skip);
+    const result = await request(`/assets?skip=${state.assetSkip}&limit=${state.assetLimit}`);
+    const items = Array.isArray(result.items) ? result.items : [];
+    state.assetTotal = result.total;
+    if (!items.length) {
+      $("asset-controls").classList.add("hidden");
+      stateNode.textContent = "No scans have been recorded yet. Run an authorized assessment to create the first asset history entry.";
+      return;
+    }
+    $("asset-controls").classList.remove("hidden");
+    stateNode.textContent = `${result.total} normalized asset${result.total === 1 ? "" : "s"} in inventory.`;
+    $("asset-select").innerHTML = items.map((asset) => `<option value="${asset.id}">${escapeHtml(asset.canonical_target)} · ${asset.scan_count} scan${asset.scan_count === 1 ? "" : "s"}</option>`).join("");
+    const chosen = items.some((asset) => asset.id === preferredId) ? preferredId : items[0].id;
+    $("asset-select").value = String(chosen);
+    state.assetId = Number(chosen);
+    $("asset-page-label").textContent = `Assets ${state.assetSkip + 1}–${Math.min(state.assetSkip + items.length, state.assetTotal)} of ${state.assetTotal}`;
+    $("asset-prev").disabled = state.assetSkip === 0;
+    $("asset-next").disabled = state.assetSkip + state.assetLimit >= state.assetTotal;
+    await loadAssetHistory(state.assetId, 0);
+  } catch (error) {
+    $("asset-controls").classList.add("hidden");
+    stateNode.textContent = `Asset history unavailable: ${error.message}`;
+  }
+}
+
+async function loadAssetHistory(assetId, skip = state.historySkip) {
+  state.assetId = Number(assetId);
+  state.historySkip = Math.max(0, skip);
+  const output = await request(`/assets/${state.assetId}/investigations?skip=${state.historySkip}&limit=${state.historyLimit}`);
+  state.historyTotal = output.total;
+  $("asset-observation").innerHTML = `<span>FIRST SEEN<strong>${escapeHtml(formatDate(output.asset.first_seen_at))}</strong></span><span>LAST SEEN<strong>${escapeHtml(formatDate(output.asset.last_seen_at))}</strong></span><span>RECORDED SCANS<strong>${output.total}</strong></span>`;
+  const scans = output.items || [];
+  $("history-body").innerHTML = scans.length ? scans.map((scan) => {
+    const points = scan.observed_risk_points ?? scan.risk_score;
+    const interpretation = scan.risk_interpretation || "Unknown";
+    return `<tr><td>#${scan.id}</td><td>${escapeHtml(scan.target)}</td><td>${escapeHtml(scan.status)}</td><td>${escapeHtml(interpretation)} ${points === null || points === undefined ? "" : `(${points} observed risk points)`} · ${escapeHtml(scan.risk_evidence_status || "unknown evidence")}</td><td>${escapeHtml(formatDate(scan.created_at))}</td><td>${scan.status === "completed" ? `<button type="button" class="history-detail" data-id="${scan.id}">View</button>` : "Not complete"}</td></tr>`;
+  }).join("") : `<tr><td colspan="6">No investigations recorded for this asset.</td></tr>`;
+  const completed = scans.filter((scan) => scan.status === "completed");
+  completed.forEach((scan) => state.availableScans.set(scan.id, scan));
+  const selectable = [...state.availableScans.values()].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  const previousSelected = Number($("previous-scan").value);
+  const currentSelected = Number($("current-scan").value);
+  const options = selectable.map((scan) => `<option value="${scan.id}">#${scan.id} · ${escapeHtml(formatDate(scan.created_at))} · ${escapeHtml(scan.risk_rating || "Not scored")}</option>`).join("");
+  $("previous-scan").innerHTML = options;
+  $("current-scan").innerHTML = options;
+  if (selectable.length > 1) {
+    const ids = new Set(selectable.map((scan) => scan.id));
+    $("previous-scan").value = String(ids.has(previousSelected) ? previousSelected : selectable[1].id);
+    $("current-scan").value = String(ids.has(currentSelected) ? currentSelected : selectable[0].id);
+  }
+  $("compare-button").disabled = selectable.length < 2;
+  $("compare-status").textContent = selectable.length < 2 ? "Two completed scans of this asset are needed. Browse more history pages to add older scans." : "Select two completed scans to review collected changes.";
+  $("history-prev").disabled = state.historySkip === 0;
+  $("history-next").disabled = state.historySkip + state.historyLimit >= state.historyTotal;
+  document.querySelectorAll(".history-detail").forEach((button) => button.addEventListener("click", () => loadPastInvestigation(Number(button.dataset.id))));
+  $("comparison-output").classList.add("hidden");
+}
+
+async function loadPastInvestigation(id) {
+  try {
+    const investigation = await request(`/investigations/${id}`);
+    if (investigation.status !== "completed" || !investigation.raw_output) throw new Error("Completed scan evidence is unavailable.");
+    renderResults(investigation);
+    window.scrollTo({ top: $("dashboard").offsetTop, behavior: "smooth" });
+  } catch (error) {
+    setMessage(error.message);
+  }
+}
+
+function renderComparison(result) {
+  const summary = result.summary || {};
+  const delta = result.risk?.delta;
+  const deltaWidth = Number.isInteger(delta) ? Math.min(Math.abs(delta), 100) : 0;
+  const groups = {};
+  for (const change of result.changes || []) (groups[change.category] ||= []).push(change);
+  const groupHtml = Object.entries(groups).map(([category, changes]) => `<section class="change-group"><h4>${escapeHtml(category)}</h4>${changes.map((change) => `<article class="change-card"><div class="change-heading"><span class="change-type ${escapeHtml(change.change_type.toLowerCase())}">${escapeHtml(change.change_type)}</span><strong>${escapeHtml(change.title)}</strong><small>${escapeHtml(change.confidence)} confidence</small></div><div class="change-values"><div><span>PREVIOUS</span><p>${escapeHtml(prettyValue(change.previous))}</p></div><div><span>CURRENT</span><p>${escapeHtml(prettyValue(change.current))}</p></div></div><details><summary>Supporting evidence</summary><pre>${escapeHtml(change.evidence || "No evidence provided")}</pre></details></article>`).join("")}</section>`).join("");
+  $("comparison-output").innerHTML = `<div class="comparison-heading"><div><p class="eyebrow">EVIDENCE-BASED SCAN DIFF</p><h3>Comparison for ${escapeHtml(result.target)}</h3></div><button type="button" id="comparison-report">Open HTML comparison report</button></div><div class="diff-metrics">${["new", "changed", "resolved", "removed", "unchanged", "unknown"].map((key) => `<div><span>${key.toUpperCase()}</span><strong>${Number(summary[key] || 0)}</strong></div>`).join("")}</div><div class="risk-delta"><span>Observed risk points (higher = more risk): ${escapeHtml(String(result.risk?.previous_score ?? "—"))} → ${escapeHtml(String(result.risk?.current_score ?? "—"))}</span><strong class="${delta > 0 ? "up" : delta < 0 ? "down" : "flat"}">${Number.isInteger(delta) && delta > 0 ? "+" : ""}${escapeHtml(String(delta ?? "Unknown"))}</strong><div class="delta-track"><i style="width:${deltaWidth}%"></i></div><small>Point change, not a probability. Evidence: ${escapeHtml(result.risk?.evidence_status || "unknown")}.</small></div>${groupHtml || `<p class="empty-state-note">No comparable observations were returned.</p>`}`;
+  $("comparison-output").classList.remove("hidden");
+  $("comparison-report").onclick = () => window.open(`${apiBase}/investigations/${result.previous.id}/compare/${result.current.id}/report`, "_blank", "noopener");
+}
+
+async function compareSelectedScans() {
+  const previousId = Number($("previous-scan").value);
+  const currentId = Number($("current-scan").value);
+  if (!previousId || !currentId || previousId === currentId) {
+    $("compare-status").textContent = "Choose two different completed scans.";
+    return;
+  }
+  $("compare-button").disabled = true;
+  $("compare-status").textContent = "Comparing stored scan evidence...";
+  try {
+    const result = await request("/investigations/compare", { method: "POST", body: JSON.stringify({ previous_id: previousId, current_id: currentId }) });
+    renderComparison(result);
+    $("compare-status").textContent = "Comparison ready. Unknown entries reflect incomplete evidence.";
+  } catch (error) {
+    $("compare-status").textContent = `Comparison failed: ${error.message}`;
+  } finally {
+    $("compare-button").disabled = false;
+  }
 }
 
 function escapeHtml(input) {
@@ -174,13 +283,14 @@ function summarizeFile(file) {
       return current > best ? current : best;
     }, -1);
     const labelValue = highest >= 0 ? ["Critical", "High", "Medium", "Low", "Informational"][highest] : "None";
-    return `Resources: ${findings.length} · Highest: ${labelValue}`;
+    return `Candidate URLs: ${data?.summary?.unique_candidate_urls ?? 0} · Observations: ${data?.summary?.heuristic_observations ?? findings.length} · Highest: ${labelValue}`;
   }
 
   if (label === "RISK / SEVERITY") {
-    const score = Number(data?.risk?.overall_score ?? data?.summary?.overall_score ?? 0);
-    const rating = data?.risk?.overall_rating || data?.summary?.overall_score || "Unknown";
-    return `Score: ${score}/100 · ${rating}`;
+    const value = data?.risk?.overall_score ?? data?.summary?.observed_risk_points;
+    const score = value !== null && value !== undefined && Number.isFinite(Number(value)) ? Number(value) : null;
+    const rating = data?.risk?.evidence_status === "complete" ? (data?.risk?.overall_rating || data?.summary?.risk_interpretation || "Unknown") : "Unknown";
+    return `Observed risk points: ${score === null ? "Not calculated" : `${score}/100`} · ${rating}`;
   }
 
   if (label === "REPORTS") {
@@ -215,29 +325,34 @@ function renderDetailBody(fileLabel, data, investigation) {
   if (fileLabel === "EXPOSURES") {
     const findings = Array.isArray(data?.findings) ? data.findings : [];
     const summary = data?.summary || {};
-    const totalResources = summary.total_exposed_resources ?? findings.length ?? 0;
+    const candidateCount = summary.unique_candidate_urls ?? 0;
+    const observationCount = summary.heuristic_observations ?? findings.length;
+    const checkedCount = summary.http_checked_candidate_urls ?? 0;
     const counts = summary.severity_counts || {};
 
     if (!findings.length) {
       return `
         <div class="detail-section">
           <div class="detail-header-row">
-            <div class="detail-kicker">Exposure Analysis</div>
-            <span class="detail-status positive">Status: No exposed resources identified</span>
+            <div class="detail-kicker">Passive Exposure Observations</div>
+            <span class="detail-status neutral">No heuristic observations returned</span>
           </div>
           <div class="empty-state">
             <div class="empty-state-icon">◎</div>
-            <h4>Exposure Analysis</h4>
-            <p class="empty-state-primary">Status: No exposed resources identified</p>
+            <h4>Passive Exposure Observations</h4>
+            <p class="empty-state-primary">No heuristic observations returned</p>
             <div class="empty-metrics">
-              <div><span>Resources discovered</span><strong>${totalResources}</strong></div>
-              <div><span>Critical findings</span><strong>${counts.Critical ?? 0}</strong></div>
-              <div><span>High findings</span><strong>${counts.High ?? 0}</strong></div>
-              <div><span>Medium findings</span><strong>${counts.Medium ?? 0}</strong></div>
-              <div><span>Low findings</span><strong>${counts.Low ?? 0}</strong></div>
-              <div><span>Informational findings</span><strong>${counts.Informational ?? 0}</strong></div>
+              <div><span>Unique candidate URLs</span><strong>${candidateCount}</strong></div>
+              <div><span>Candidate URLs with HTTP response evidence</span><strong>${checkedCount}</strong></div>
+              <div><span>Confirmed misconfigurations</span><strong>Not assessed</strong></div>
+              <div><span>Confirmed vulnerabilities</span><strong>Not assessed</strong></div>
+              <div><span>Critical observations</span><strong>${counts.Critical ?? 0}</strong></div>
+              <div><span>High observations</span><strong>${counts.High ?? 0}</strong></div>
+              <div><span>Medium observations</span><strong>${counts.Medium ?? 0}</strong></div>
+              <div><span>Low observations</span><strong>${counts.Low ?? 0}</strong></div>
+              <div><span>Informational observations</span><strong>${counts.Informational ?? 0}</strong></div>
             </div>
-            <p class="empty-state-note">No potentially exposed resources were identified by the current reconnaissance checks. This does not guarantee that the target is free of security vulnerabilities.</p>
+            <p class="empty-state-note">Candidate references are not access checks. This framework does not confirm vulnerabilities.</p>
           </div>
         </div>
       `;
@@ -249,20 +364,22 @@ function renderDetailBody(fileLabel, data, investigation) {
       const source = normalizeText(finding.source || finding.category || "Passive evidence");
       const evidence = normalizeText(finding.evidence || "No specific evidence was recorded.");
       const reason = normalizeText(finding.reason || "This observation may warrant manual verification and review.");
-      const recommendation = normalizeText(finding.recommendation || "Review the exposed resource and confirm the appropriate access controls are in place.");
-      const statusCode = finding.status_code ? `HTTP Status: ${finding.status_code}` : "HTTP Status: Not reported";
+      const recommendation = normalizeText(finding.recommendation || "Review this observation and its collected evidence.");
+      const statusCode = finding.status_code !== null && finding.status_code !== undefined
+        ? `${finding.status_code}${finding.status_resource ? ` for ${finding.status_resource}` : " (resource attribution unavailable)"}`
+        : "Not requested / no exact-resource response recorded";
 
       return `
         <article class="finding-card">
           <div class="finding-header">
             <div>
-              <p class="detail-kicker">Exposure Finding</p>
-              <h4>${escapeHtml(finding.title || "Exposure Finding")}</h4>
+              <p class="detail-kicker">Heuristic Observation</p>
+              <h4>${escapeHtml(finding.title || "Heuristic Observation")}</h4>
             </div>
             <span class="severity-badge ${severityClass(severity)}">${escapeHtml(severity)}</span>
           </div>
           <div class="finding-meta">
-            <div><span>Resource</span><strong>${escapeHtml(resource)}</strong>${resource !== "Not reported" ? `<button class="copy-inline" type="button" data-copy="${escapeHtml(resource)}">Copy</button>` : ""}</div>
+            <div><span>Referenced resource</span><strong>${escapeHtml(resource)}</strong>${resource !== "Not reported" ? `<button class="copy-inline" type="button" data-copy="${escapeHtml(resource)}">Copy</button>` : ""}</div>
             <div><span>Discovered through</span><strong>${escapeHtml(source)}</strong></div>
             <div><span>HTTP Status</span><strong>${escapeHtml(statusCode.replace("HTTP Status: ", ""))}</strong></div>
           </div>
@@ -286,9 +403,10 @@ function renderDetailBody(fileLabel, data, investigation) {
     return `
       <div class="detail-section">
         <div class="detail-header-row">
-          <div class="detail-kicker">Exposure Findings</div>
-          <span class="detail-status warning">Resources discovered: ${totalResources}</span>
+          <div class="detail-kicker">Heuristic Observations</div>
+          <span class="detail-status neutral">${observationCount} observations</span>
         </div>
+        <p class="empty-state-note">Unique candidate URLs: ${candidateCount}. Exact-request HTTP responses: ${checkedCount}. Candidate references and heuristic observations do not confirm misconfigurations or vulnerabilities.</p>
         <div class="finding-stack">${findingCards}</div>
       </div>
     `;
@@ -403,11 +521,14 @@ function renderDetailBody(fileLabel, data, investigation) {
   }
 
   if (fileLabel === "TECHNOLOGIES") {
-    const list = Array.isArray(data?.technologies) ? data.technologies : (Array.isArray(data) ? data : []);
+    const list = Array.isArray(data?.detections) ? data.detections : (Array.isArray(data?.technologies) ? data.technologies.map((name) => ({ name, confidence: "Not reported", evidence: [] })) : (Array.isArray(data) ? data.map((name) => ({ name, confidence: "Not reported", evidence: [] })) : []));
+    const state = data?.status || "unknown";
+    const stateLabel = state === "identified" ? "Technology identified" : state === "no_match" || state === "ok" ? "No supported technology identified" : state === "incomplete" ? "Detection incomplete" : state === "failed" || state === "error" ? "Detection failed" : "Detection state unavailable";
     return `
       <div class="detail-section">
-        <div class="detail-header-row"><div class="detail-kicker">Technology Fingerprint</div><span class="detail-status ${list.length ? "positive" : "neutral"}">${list.length ? `${list.length} technologies detected` : "No technologies identified"}</span></div>
-        <div class="tag-list">${list.length ? list.map((item) => `<span class="tag">${escapeHtml(String(item))}</span>`).join("") : `<span class="tag neutral">No technology fingerprints were collected.</span>`}</div>
+        <div class="detail-header-row"><div class="detail-kicker">Technology Fingerprint</div><span class="detail-status ${state === "identified" ? "positive" : "neutral"}">${escapeHtml(stateLabel)}</span></div>
+        ${data?.message ? `<p class="empty-state-note">${escapeHtml(data.message)}</p>` : ""}
+        <div class="finding-stack">${list.length ? list.map((item) => `<article class="finding-card"><h4>${escapeHtml(String(item.name))}</h4><p>Confidence: ${escapeHtml(item.confidence || "Not reported")}</p><pre>${escapeHtml(JSON.stringify(item.evidence || [], null, 2))}</pre></article>`).join("") : `<p class="empty-state-note">No supported technology fingerprint was collected.</p>`}</div>
       </div>
     `;
   }
@@ -415,24 +536,26 @@ function renderDetailBody(fileLabel, data, investigation) {
   if (fileLabel === "RISK / SEVERITY") {
     const risk = data?.risk || {};
     const summary = data?.summary || {};
-    const score = Number(risk.overall_score ?? summary.overall_score ?? 0);
-    const rating = risk.overall_rating || summary.overall_score || "Unknown";
-    const exposureRisk = summary.overall_score || "Informational";
+    const rawScore = risk.overall_score ?? summary.observed_risk_points;
+    const score = rawScore !== null && rawScore !== undefined && Number.isFinite(Number(rawScore)) ? Number(rawScore) : null;
+    const rating = risk.evidence_status === "complete" ? (risk.overall_rating || summary.risk_interpretation || "Unknown") : "Unknown";
+    const exposureRisk = summary.observation_rating || "Not calculated";
+    const evidenceStatus = risk.evidence_status || "unknown";
     return `
       <div class="detail-section">
-        <div class="detail-header-row"><div class="detail-kicker">Risk and Severity</div><span class="detail-status ${score >= 70 ? "negative" : score >= 40 ? "warning" : "positive"}">${escapeHtml(rating)}</span></div>
+        <div class="detail-header-row"><div class="detail-kicker">Risk Interpretation</div><span class="detail-status ${evidenceStatus !== "complete" || score === null ? "neutral" : score >= 40 ? "negative" : score >= 20 ? "warning" : "positive"}">${escapeHtml(rating)}</span></div>
         <div class="score-panel">
           <div class="score-block">
-            <p>Security score</p>
-            <strong>${score} / 100</strong>
+            <p>Observed risk points (higher = more observed risk)</p>
+            <strong>${score === null ? "Not calculated" : `${score} / 100`}</strong>
           </div>
           <div class="progress-track compact"><div style="width:${Math.min(score, 100)}%"></div></div>
           <div class="score-meta">
-            <span>Risk level: ${escapeHtml(rating)}</span>
-            <span>Exposure risk: ${escapeHtml(exposureRisk)}</span>
+            <span>Risk interpretation: ${escapeHtml(rating)} · Evidence: ${escapeHtml(evidenceStatus)}</span>
+            <span>Exposure observation rating: ${escapeHtml(exposureRisk)}</span>
           </div>
         </div>
-        <p class="empty-state-note">This score is based on passive evidence and should be treated as a risk indicator, not a guarantee of exploitability. Low scores do not mean the site is secure; they simply indicate less public evidence of risk from the current checks.</p>
+        <p class="empty-state-note">These are observed risk points, not a security protection score or probability. Incomplete evidence produces an Unknown interpretation; a low point total is not assurance that the site is secure.</p>
       </div>
     `;
   }
@@ -494,28 +617,29 @@ function renderResults(investigation) {
     makeFile("SSL / TLS", "CERTIFICATE", modules.ssl, "◇"),
     makeFile("TECHNOLOGIES", "FINGERPRINT", modules.technology, "#"),
     makeFile("SECURITY HEADERS", "HARDENING", modules.security_headers, "//"),
-    makeFile("EXPOSURES", "FINDINGS", exposure, "!"),
+    makeFile("EXPOSURES", "OBSERVATIONS", exposure, "!"),
     makeFile("RISK / SEVERITY", "ANALYSIS", { risk, summary }, "△"),
     makeFile("REPORTS", "GENERATED", report.report_paths || investigation, "▤"),
   ].filter((file) => file.available);
 
-  const score = Number(risk.overall_score ?? report.risk_summary?.security_score?.split("/")[0] ?? 0);
-  const rating = risk.overall_rating || report.risk_summary?.security_risk || "Unknown";
-  const exposureRisk = summary.overall_score || report.risk_summary?.exposure_risk || "Informational";
+  const scoreValue = risk.overall_score ?? report.risk_summary?.observed_risk_points;
+  const score = scoreValue !== null && scoreValue !== undefined && Number.isFinite(Number(scoreValue)) ? Number(scoreValue) : null;
+  const rating = risk.evidence_status === "complete" ? (risk.overall_rating || report.risk_summary?.risk_interpretation || "Unknown") : "Unknown";
+  const exposureRisk = summary.observation_rating || report.risk_summary?.exposure_observation_rating || "Not calculated";
   const htmlReportAvailable = Boolean(investigation.html_report_location || report.report_paths?.html);
 
   $("dashboard").classList.remove("hidden");
   $("progress-panel").classList.add("hidden");
   $("result-target").textContent = investigation.target;
   $("result-time").textContent = `${report.normalized_target?.hostname || ""} · ${investigation.status}`;
-  $("risk-chip").textContent = `${rating} RISK · ${score}/100`;
+  $("risk-chip").textContent = `${rating} RISK · ${score === null ? "Not scored" : `${score}/100 risk points`}`;
   $("view-html-report").classList.toggle("hidden", !htmlReportAvailable);
   $("view-html-report").onclick = () => openReport(`/investigations/${investigation.id}/report/html`, "text/html");
   $("file-count").textContent = `${files.length} evidence files`;
   $("result-metrics").innerHTML = `
-    <div class="metric-card"><span>Security score</span><strong>${score} / 100</strong><small>${rating}</small></div>
-    <div class="metric-card"><span>Exposure risk</span><strong>${escapeHtml(exposureRisk)}</strong><small>${summary.total_exposed_resources ?? 0} resources</small></div>
-    <div class="metric-card"><span>Findings</span><strong>${summary.total_exposed_resources ?? 0}</strong><small>${summary.medium_findings ?? 0} medium</small></div>
+    <div class="metric-card"><span>Observed risk points · higher = more risk</span><strong>${score === null ? "Not calculated" : `${score} / 100`}</strong><small>${escapeHtml(rating)} · evidence ${escapeHtml(risk.evidence_status || "unknown")}</small></div>
+    <div class="metric-card"><span>Exposure observation rating</span><strong>${escapeHtml(exposureRisk)}</strong><small>${summary.unique_candidate_urls ?? 0} unique candidate URLs</small></div>
+    <div class="metric-card"><span>Heuristic observations</span><strong>${summary.heuristic_observations ?? exposure.findings?.length ?? 0}</strong><small>${summary.http_checked_candidate_urls ?? 0} candidate URLs with exact-request HTTP evidence</small></div>
   `;
   $("file-grid").innerHTML = files.map((file) => `<button class="file-card" type="button" data-label="${escapeHtml(file.label)}"><span class="file-icon">${escapeHtml(file.icon)}</span><strong>${escapeHtml(file.label)}</strong><small>${escapeHtml(file.tag)}</small><span class="file-summary">${escapeHtml(summarizeFile(file))}</span></button>`).join("");
   document.querySelectorAll(".file-card").forEach((card) => card.addEventListener("click", () => renderDetail(files.find((file) => file.label === card.dataset.label), investigation)));
@@ -532,6 +656,7 @@ async function pollInvestigation() {
     if (["completed", "failed"].includes(investigation.status)) {
       clearInterval(state.timer);
       stopScanCopy();
+      await loadAssets();
       if (investigation.status === "completed" && investigation.raw_output) {
         if (investigation.html_report_location || investigation.raw_output.report_paths?.html) {
           window.location.assign(`${apiBase}/investigations/${investigation.id}/report/html`);
@@ -556,6 +681,13 @@ $("folder-toggle").addEventListener("click", () => {
   $("folder-toggle").querySelector("i").textContent = open ? "OPEN" : "CLOSE";
 });
 $("detail-close").addEventListener("click", () => $("detail-panel").classList.add("hidden"));
+$("refresh-assets").addEventListener("click", () => loadAssets());
+$("asset-select").addEventListener("change", () => { state.availableScans.clear(); loadAssetHistory(Number($("asset-select").value), 0).catch((error) => { $("compare-status").textContent = error.message; }); });
+$("asset-prev").addEventListener("click", () => loadAssets(state.assetId, Math.max(0, state.assetSkip - state.assetLimit)));
+$("asset-next").addEventListener("click", () => loadAssets(null, state.assetSkip + state.assetLimit));
+$("history-prev").addEventListener("click", () => loadAssetHistory(state.assetId, Math.max(0, state.historySkip - state.historyLimit)).catch((error) => { $("compare-status").textContent = error.message; }));
+$("history-next").addEventListener("click", () => loadAssetHistory(state.assetId, state.historySkip + state.historyLimit).catch((error) => { $("compare-status").textContent = error.message; }));
+$("compare-button").addEventListener("click", compareSelectedScans);
 
 async function submitScan() {
   const target = $("target").value.trim();
@@ -583,3 +715,4 @@ async function submitScan() {
 $("scan-form").addEventListener("submit", (event) => { event.preventDefault(); submitScan(); });
 $("retry-button").addEventListener("click", () => { $("target").value = state.lastTarget || $("target").value; submitScan(); });
 fetch("/health/db").then((response) => response.json()).then((health) => { $("health").textContent = health.status === "ok" ? "SERVICE ONLINE" : "DATABASE UNAVAILABLE"; }).catch(() => { $("health").textContent = "SERVICE OFFLINE"; });
+loadAssets();

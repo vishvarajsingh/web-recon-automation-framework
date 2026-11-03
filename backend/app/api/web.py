@@ -1,17 +1,69 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, HTTPException, Path as PathParam, Query, status
+from fastapi.responses import FileResponse, HTMLResponse
 from pathlib import Path
 from sqlalchemy.orm import Session
 
 from ..dependencies import get_db
-from ..schemas import InvestigationCreate, InvestigationRead
+from ..schemas import AssetRead, InvestigationComparisonRequest, InvestigationCreate, InvestigationHistoryItem, InvestigationRead
+from ..services.asset_service import asset_history, list_assets
 from ..services.investigation_service import create_investigation, get_investigation
 from ..services.job_service import submit_investigation
 from ..services.report_service import safe_report_path
+from ..services.comparison_service import compare_investigations
+from reporting.comparison_report import generate_comparison_html
 from ..services.target_security import validate_target
 
 
 router = APIRouter(prefix="/web-api", tags=["public scanner"])
+
+
+@router.get("/assets")
+def read_assets(skip: int = Query(default=0, ge=0, le=100_000), limit: int = Query(default=50, ge=1, le=100), db: Session = Depends(get_db)):
+    rows, total = list_assets(db, skip=skip, limit=limit)
+    return {"items": [AssetRead(
+        id=asset.id,
+        canonical_target=asset.canonical_target,
+        target_type=asset.target_type,
+        first_seen_at=asset.first_seen_at,
+        last_seen_at=asset.last_seen_at,
+        scan_count=count,
+    ).model_dump(mode="json") for asset, count in rows], "total": total, "skip": skip, "limit": limit}
+
+
+@router.get("/assets/{asset_id}/investigations")
+def read_asset_history(asset_id: int = PathParam(gt=0), skip: int = Query(default=0, ge=0, le=100_000), limit: int = Query(default=20, ge=1, le=100), db: Session = Depends(get_db)):
+    asset, rows, total = asset_history(db, asset_id, skip=skip, limit=limit)
+    if asset is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Asset not found")
+    items = [InvestigationHistoryItem(
+        id=row.id,
+        target=row.target,
+        status=row.status,
+        risk_score=row.risk_score,
+        risk_rating=row.risk_rating,
+        observed_risk_points=row.risk_score,
+        risk_interpretation=row.risk_interpretation,
+        risk_evidence_status=row.risk_evidence_status,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        has_json_report=bool(row.report_location),
+        has_html_report=bool(row.html_report_location),
+    ).model_dump(mode="json") for row in rows]
+    return {"asset": {"id": asset.id, "canonical_target": asset.canonical_target,
+                       "first_seen_at": asset.first_seen_at.isoformat(),
+                       "last_seen_at": asset.last_seen_at.isoformat()},
+            "items": items, "total": total, "skip": skip, "limit": limit}
+
+
+@router.post("/investigations/compare")
+def compare_scans(payload: InvestigationComparisonRequest, db: Session = Depends(get_db)):
+    return compare_investigations(db, payload.previous_id, payload.current_id)
+
+
+@router.get("/investigations/{previous_id}/compare/{current_id}/report", response_class=HTMLResponse)
+def comparison_report(previous_id: int = PathParam(gt=0), current_id: int = PathParam(gt=0), db: Session = Depends(get_db)):
+    comparison = compare_investigations(db, previous_id, current_id)
+    return HTMLResponse(generate_comparison_html(comparison))
 
 
 @router.post("/investigations/", response_model=InvestigationRead, status_code=status.HTTP_202_ACCEPTED)

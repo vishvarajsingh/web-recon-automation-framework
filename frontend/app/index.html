@@ -47,6 +47,26 @@
       <button id="retry-button" class="crimson-press-btn" type="button"><span>Retry scan</span><b>↻</b></button>
     </section>
 
+    <section class="asset-panel" id="asset-inventory" aria-labelledby="asset-title">
+      <div class="asset-heading"><div><p class="eyebrow">PERSISTED ASSESSMENTS</p><h2 id="asset-title">Asset inventory &amp; scan history</h2></div><button type="button" id="refresh-assets" class="quiet-button">Refresh</button></div>
+      <p id="asset-state" class="empty-state-note">Loading assessed assets...</p>
+      <div id="asset-controls" class="hidden">
+        <label for="asset-select">ASSESSED ASSET</label>
+        <select id="asset-select"></select>
+        <div class="history-toolbar"><span id="asset-page-label" class="muted"></span><div><button type="button" id="asset-prev" class="quiet-button">Previous assets</button><button type="button" id="asset-next" class="quiet-button">Next assets</button></div></div>
+        <div class="asset-observation" id="asset-observation"></div>
+        <div class="history-toolbar"><h3>Investigation history</h3><div><button type="button" id="history-prev" class="quiet-button">Previous</button><button type="button" id="history-next" class="quiet-button">Next</button></div></div>
+        <div class="table-wrap"><table class="detail-table"><thead><tr><th>Scan</th><th>Target</th><th>Status</th><th>Risk</th><th>Started</th><th>Details</th></tr></thead><tbody id="history-body"></tbody></table></div>
+        <div class="compare-controls">
+          <label for="previous-scan">PREVIOUS SCAN</label><select id="previous-scan"></select>
+          <label for="current-scan">CURRENT SCAN</label><select id="current-scan"></select>
+          <button type="button" id="compare-button" class="crimson-press-btn"><span>Compare scans</span></button>
+        </div>
+        <p id="compare-status" class="empty-state-note" role="status"></p>
+        <div id="comparison-output" class="comparison-output hidden"></div>
+      </div>
+    </section>
+
     <section class="results hidden" id="dashboard">
       <div class="result-heading"><div><p class="eyebrow">RECON COMPLETE</p><h2 id="result-target">Target</h2><p class="muted" id="result-time"></p></div><div class="result-actions"><button id="view-html-report" class="report-open-button hidden" type="button">View HTML report <span aria-hidden="true">↗</span></button><div class="risk-chip" id="risk-chip">ANALYSIS READY</div></div></div>
       <div class="summary-strip" id="result-metrics"></div>

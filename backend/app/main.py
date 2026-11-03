@@ -11,14 +11,14 @@ from .api.router import api_router
 from .api.web import router as web_router
 from .core.config import settings
 from .core.database import engine
-from .models import Base
+from .core.migrations import initialize_schema
 
 logger = logging.getLogger("web_recon_backend")
 
 
 def initialize_database() -> None:
     try:
-        Base.metadata.create_all(bind=engine)
+        initialize_schema(engine)
     except SQLAlchemyError as exc:
         logger.warning("Database initialization unavailable: %s", exc)
 

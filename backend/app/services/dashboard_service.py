@@ -15,6 +15,9 @@ def build_dashboard_summary(db: Session) -> DashboardSummary:
             status=item.status,
             risk_score=item.risk_score,
             risk_rating=item.risk_rating,
+            observed_risk_points=item.risk_score,
+            risk_interpretation=item.risk_interpretation,
+            risk_evidence_status=item.risk_evidence_status,
             created_at=item.created_at,
         )
         for item in recent

@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..dependencies import get_db
-from ..schemas import InvestigationCreate, InvestigationRead
+from ..schemas import InvestigationComparisonRequest, InvestigationCreate, InvestigationRead
 from ..services.investigation_service import (
     create_investigation,
     delete_investigation,
@@ -11,6 +11,7 @@ from ..services.investigation_service import (
     list_investigations,
     update_investigation,
 )
+from ..services.comparison_service import compare_investigations
 from ..services.job_service import submit_investigation
 from ..security import require_api_key
 from ..services.target_security import validate_target
@@ -95,14 +96,19 @@ def rerun_investigation(investigation_id: int, db: Session = Depends(get_db)):
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
+    rerun = create_investigation(db, target=investigation.target)
     try:
-        update_investigation(db, investigation, status="pending", progress=0, progress_message="Queued for rerun")
-        submit_investigation(investigation.id, investigation.target)
+        submit_investigation(rerun.id, rerun.target)
     except Exception as exc:
-        update_investigation(db, investigation, status="failed", progress=100, progress_message=str(exc))
+        update_investigation(db, rerun, status="failed", progress=100, progress_message=str(exc))
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Investigation could not be queued: {exc}",
         )
 
-    return investigation
+    return rerun
+
+
+@router.post("/compare")
+def compare_investigations_endpoint(payload: InvestigationComparisonRequest, db: Session = Depends(get_db)):
+    return compare_investigations(db, payload.previous_id, payload.current_id)

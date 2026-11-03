@@ -1,8 +1,11 @@
 import json
+from io import StringIO
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import requests
+from rich.console import Console
 
 import main
 from modules import http_headers, ssl_info
@@ -121,7 +124,9 @@ def test_ssl_failure_is_structured(monkeypatch):
     assert "connection failed" in result["error"]
 
 
-def test_collect_recon_statuses_counts_and_saved_payload(monkeypatch, tmp_path):
+def test_collect_recon_statuses_counts_and_saved_payload(monkeypatch, tmp_path, capsys):
+    cli_stream = StringIO()
+    monkeypatch.setattr(main, "console", Console(file=cli_stream, force_terminal=False, width=160))
     monkeypatch.setattr(main, "gather_whois_info", lambda target: {"status": "ok"})
     monkeypatch.setattr(main, "gather_dns_info", lambda target: {"status": "not_found", "records": {}})
     monkeypatch.setattr(main, "gather_ip_info", lambda target: {"status": "ok", "ipv4": ["203.0.113.10"], "ipv6": [], "reverse_dns": []})
@@ -136,17 +141,34 @@ def test_collect_recon_statuses_counts_and_saved_payload(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "gather_robots", lambda target: {"status": "not_found"})
     monkeypatch.setattr(main, "gather_sitemap", lambda target: {"status": "not_found", "results": []})
     monkeypatch.setattr(main, "gather_security_headers", lambda target: {"status": "ok", "headers": {}})
-    monkeypatch.setattr(main, "detect_technology", lambda target: {"status": "ok", "technologies": []})
+    monkeypatch.setattr(main, "detect_technology", lambda target: {"status": "no_match", "complete": True, "technologies": [], "detections": []})
 
     payload = main.collect_recon("example.com", output_dir=tmp_path)
     saved = json.loads((tmp_path / next(path.name for path in tmp_path.glob("*.json"))).read_text())
+    capsys.readouterr()
+    cli_output = cli_stream.getvalue()
 
     assert payload["metadata"]["resolved_ip"] == "203.0.113.10"
     assert payload["module_status"]["dns"] == "NOT_FOUND"
     assert payload["module_status"]["sitemap"] == "NOT_FOUND"
     assert payload["module_status"]["ssl"] == "FAILED"
-    assert payload["risk_summary"]["high_findings"] == 1
+    assert payload["module_status"]["technology"] == "SUCCESS"
+    assert payload["risk_summary"]["risk_interpretation"] == "Unknown"
+    assert payload["risk_summary"]["risk_evidence_status"] == "incomplete"
+    assert payload["risk_summary"]["unique_candidate_urls"] == 2
+    assert payload["risk_summary"]["http_checked_candidate_urls"] == 0
+    assert payload["risk_summary"]["confirmed_vulnerabilities"] == 0
+    assert payload["risk"]["overall_rating"] == payload["risk_summary"]["risk_interpretation"]
+    assert payload["risk"]["overall_score"] == payload["risk_summary"]["observed_risk_points"]
     assert saved["report_paths"] == payload["report_paths"]
+    assert saved["risk_summary"] == payload["risk_summary"]
+    assert "Observed Risk Points (higher = more risk)" in cli_output
+    assert "Unique Candidate URLs" in cli_output
+    report_html = Path(payload["report_paths"]["html"]).read_text(encoding="utf-8")
+    assert "Observed Risk Points" in report_html
+    assert "Evidence Completeness" in report_html
+    assert "Unique Candidate URLs" in report_html
+    assert "Confirmed Vulnerabilities" in report_html
 
 
 def test_generate_html_report_uses_professional_summary_and_no_raw_windows_paths():
@@ -156,31 +178,38 @@ def test_generate_html_report_uses_professional_summary_and_no_raw_windows_paths
         "normalized_target": {"hostname": "example.com", "scheme": "https", "base_url": "https://example.com", "path": "/"},
         "metadata": {"duration_seconds": 12.5},
         "risk_summary": {
-            "security_risk": "Low",
-            "security_score": "15/100",
-            "exposure_risk": "Medium",
-            "exposed_resources": 1,
-            "critical_findings": 0,
-            "high_findings": 0,
-            "medium_findings": 1,
-            "low_findings": 0,
+            "risk_interpretation": "Unknown",
+            "observed_risk_points": 15,
+            "risk_evidence_status": "incomplete",
+            "exposure_observation_rating": "Informational",
+            "unique_candidate_urls": 1,
+            "heuristic_observations": 1,
+            "http_checked_candidate_urls": 0,
+            "http_response_candidate_urls": 0,
+            "confirmed_misconfigurations": 0,
+            "misconfiguration_assessment": "not_performed",
+            "confirmed_vulnerabilities": 0,
+            "observation_severity_counts": {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "Informational": 1},
         },
-        "risk": {"overall_score": 15, "overall_rating": "Low"},
+        "risk": {"overall_score": 15, "overall_rating": "Unknown", "evidence_status": "incomplete"},
         "exposure": {
             "summary": {
-                "overall_score": "Medium",
-                "total_exposed_resources": 1,
-                "critical_findings": 0,
-                "high_findings": 0,
-                "medium_findings": 1,
-                "low_findings": 0,
+                "observation_rating": "Informational",
+                "unique_candidate_urls": 1,
+                "heuristic_observations": 1,
+                "http_checked_candidate_urls": 0,
+                "http_response_candidate_urls": 0,
+                "confirmed_misconfigurations": 0,
+                "misconfiguration_assessment": "not_performed",
+                "confirmed_vulnerabilities": 0,
+                "severity_counts": {"Critical": 0, "High": 0, "Medium": 0, "Low": 0, "Informational": 1},
             },
             "findings": [{
-                "title": "Administrative Interface Discovered",
-                "severity": "Medium",
+                "title": "Administrative Path Referenced",
+                "severity": "Informational",
                 "resource": "/admin",
                 "source": "robots.txt",
-                "status_code": 200,
+                "status_code": None,
                 "evidence": "Disallow: /admin",
                 "reason": "A public path hint may lead to a restricted administrative area.",
                 "recommendation": "Verify access controls and authentication.",
@@ -203,11 +232,14 @@ def test_generate_html_report_uses_professional_summary_and_no_raw_windows_paths
 
     html = generate_html_report(payload)
 
-    assert "Metric" in html and "Value" in html
-    assert "Security Score" in html and "15/100" in html
+    assert "Metric" in html and "Result" in html
+    assert "Observed Risk Points" in html and "15/100" in html
+    assert "Risk Interpretation" in html and "Unknown" in html
+    assert "higher points mean more observed risk" in html
     assert "Executive Summary" in html
-    assert "Exposure Findings" in html
-    assert "Administrative Interface Discovered" in html
+    assert "Heuristic Observations" in html
+    assert "Administrative Path Referenced" in html
+    assert "Confirmed Vulnerabilities" in html and "Not assessed" in html
     assert "View Raw Data" in html
     assert "example.json" in html and "example.html" in html
     assert "C:\\Users" not in html
@@ -319,11 +351,11 @@ def test_generate_html_report_uses_specialized_module_tables_and_collapsed_raw_d
     for section in (
         "WHOIS Information", "DNS Summary", "IP Address Information", "HTTP Response",
         "SSL/TLS Certificate", "Security Headers", "Technology Detection", "robots.txt",
-        "sitemap.xml", "Exposure Findings", "Risk Summary", "Generated Reports",
+        "sitemap.xml", "Heuristic Observations", "Risk Summary", "Generated Reports",
     ):
         assert section in visible_report
     assert "Security Header" in visible_report and "Observed Value" in visible_report
-    assert "Finding</th>" in visible_report and "Recommended Action" in visible_report
+    assert "Heuristic Observation</th>" in visible_report and "Recommended Action" in visible_report
     assert "Example Registrar" in visible_report and "Apache" in visible_report
     assert "RAW_HTTP_BODY_SENTINEL" not in visible_report
     assert "RAW_HTTP_BODY_SENTINEL" in html.split("<details>", 1)[1]
